@@ -1,0 +1,302 @@
+[
+  {
+    "code": "1002",
+    "name_th": "ดุสิต",
+    "name_en": "Dusit",
+    "camera_count": 97
+  },
+  {
+    "code": "1037",
+    "name_th": "ราชเทวี",
+    "name_en": "Ratchathewi",
+    "camera_count": 55
+  },
+  {
+    "code": "1001",
+    "name_th": "พระนคร",
+    "name_en": "Phra Nakhon",
+    "camera_count": 51
+  },
+  {
+    "code": "1007",
+    "name_th": "ปทุมวัน",
+    "name_en": "Pathum Wan",
+    "camera_count": 42
+  },
+  {
+    "code": "1030",
+    "name_th": "จตุจักร",
+    "name_en": "Chatuchak",
+    "camera_count": 35
+  },
+  {
+    "code": "1026",
+    "name_th": "ดินแดง",
+    "name_en": "Din Daeng",
+    "camera_count": 32
+  },
+  {
+    "code": "1028",
+    "name_th": "สาทร",
+    "name_en": "Sathon",
+    "camera_count": 27
+  },
+  {
+    "code": "1014",
+    "name_th": "พญาไท",
+    "name_en": "Phaya Thai",
+    "camera_count": 27
+  },
+  {
+    "code": "1008",
+    "name_th": "ป้อมปราบศัตรูพ่าย",
+    "name_en": "Pom Prap Sattru Phai",
+    "camera_count": 25
+  },
+  {
+    "code": "1017",
+    "name_th": "ห้วยขวาง",
+    "name_en": "Huai Khwang",
+    "camera_count": 23
+  },
+  {
+    "code": "1012",
+    "name_th": "ยานนาวา",
+    "name_en": "Yan Nawa",
+    "camera_count": 23
+  },
+  {
+    "code": "1015",
+    "name_th": "ธนบุรี",
+    "name_en": "Thon Buri",
+    "camera_count": 22
+  },
+  {
+    "code": "1019",
+    "name_th": "ตลิ่งชัน",
+    "name_en": "Taling Chan",
+    "camera_count": 18
+  },
+  {
+    "code": "1004",
+    "name_th": "บางรัก",
+    "name_en": "Bang Rak",
+    "camera_count": 15
+  },
+  {
+    "code": "1031",
+    "name_th": "บางคอแหลม",
+    "name_en": "Bang Kho Laem",
+    "camera_count": 14
+  },
+  {
+    "code": "1020",
+    "name_th": "บางกอกน้อย",
+    "name_en": "Bangkok Noi",
+    "camera_count": 11
+  },
+  {
+    "code": "1025",
+    "name_th": "บางพลัด",
+    "name_en": "Bang Phlat",
+    "camera_count": 11
+  },
+  {
+    "code": "1033",
+    "name_th": "คลองเตย",
+    "name_en": "Khlong Toei",
+    "camera_count": 10
+  },
+  {
+    "code": "1018",
+    "name_th": "คลองสาน",
+    "name_en": "Khlong San",
+    "camera_count": 8
+  },
+  {
+    "code": "1034",
+    "name_th": "สวนหลวง",
+    "name_en": "Suan Luang",
+    "camera_count": 7
+  },
+  {
+    "code": "1047",
+    "name_th": "บางนา",
+    "name_en": "Bang Na",
+    "camera_count": 5
+  },
+  {
+    "code": "1011",
+    "name_th": "ลาดกระบัง",
+    "name_en": "Lat Krabang",
+    "camera_count": 5
+  },
+  {
+    "code": "1050",
+    "name_th": "บางบอน",
+    "name_en": "Bang Bon",
+    "camera_count": 4
+  },
+  {
+    "code": "1039",
+    "name_th": "วัฒนา",
+    "name_en": "Watthana",
+    "camera_count": 4
+  },
+  {
+    "code": "1006",
+    "name_th": "บางกะปิ",
+    "name_en": "Bang Kapi",
+    "camera_count": 4
+  },
+  {
+    "code": "1010",
+    "name_th": "มีนบุรี",
+    "name_en": "Min Buri",
+    "camera_count": 4
+  },
+  {
+    "code": "1009",
+    "name_th": "พระโขนง",
+    "name_en": "Phra Khanong",
+    "camera_count": 4
+  },
+  {
+    "code": "1040",
+    "name_th": "บางแค",
+    "name_en": "Bang Khae",
+    "camera_count": 3
+  },
+  {
+    "code": "1035",
+    "name_th": "จอมทอง",
+    "name_en": "Chom Thong",
+    "camera_count": 3
+  },
+  {
+    "code": "1041",
+    "name_th": "หลักสี่",
+    "name_en": "Lak Si",
+    "camera_count": 2
+  },
+  {
+    "code": "1048",
+    "name_th": "ทวีวัฒนา",
+    "name_en": "Thawi Watthana",
+    "camera_count": 2
+  },
+  {
+    "code": "1045",
+    "name_th": "วังทองหลาง",
+    "name_en": "Wang Thonglang",
+    "camera_count": 2
+  },
+  {
+    "code": "1029",
+    "name_th": "บางซื่อ",
+    "name_en": "Bang Sue",
+    "camera_count": 2
+  },
+  {
+    "code": "1005",
+    "name_th": "บางเขน",
+    "name_en": "Bang Khen",
+    "camera_count": 2
+  },
+  {
+    "code": "1016",
+    "name_th": "บางกอกใหญ่",
+    "name_en": "Bangkok Yai",
+    "camera_count": 2
+  },
+  {
+    "code": "1013",
+    "name_th": "สัมพันธวงศ์",
+    "name_en": "Samphanthawong",
+    "camera_count": 2
+  },
+  {
+    "code": "1043",
+    "name_th": "คันนายาว",
+    "name_en": "Khan Na Yao",
+    "camera_count": 1
+  },
+  {
+    "code": "1044",
+    "name_th": "สะพานสูง",
+    "name_en": "Saphan Sung",
+    "camera_count": 1
+  },
+  {
+    "code": "1027",
+    "name_th": "บึงกุ่ม",
+    "name_en": "Bueng Kum",
+    "camera_count": 1
+  },
+  {
+    "code": "1024",
+    "name_th": "ราษฎร์บูรณะ",
+    "name_en": "Rat Burana",
+    "camera_count": 1
+  },
+  {
+    "code": "1022",
+    "name_th": "ภาษีเจริญ",
+    "name_en": "Phasi Charoen",
+    "camera_count": 1
+  },
+  {
+    "code": "1032",
+    "name_th": "ประเวศ",
+    "name_en": "Prawet",
+    "camera_count": 1
+  },
+  {
+    "code": "1038",
+    "name_th": "ลาดพร้าว",
+    "name_en": "Lat Phrao",
+    "camera_count": 1
+  },
+  {
+    "code": "1003",
+    "name_th": "หนองจอก",
+    "name_en": "Nong Chok",
+    "camera_count": 1
+  },
+  {
+    "code": "1042",
+    "name_th": "สายไหม",
+    "name_en": "Sai Mai",
+    "camera_count": 0
+  },
+  {
+    "code": "1049",
+    "name_th": "ทุ่งครุ",
+    "name_en": "Thung Khru",
+    "camera_count": 0
+  },
+  {
+    "code": "1046",
+    "name_th": "คลองสามวา",
+    "name_en": "Khlong Sam Wa",
+    "camera_count": 0
+  },
+  {
+    "code": "1021",
+    "name_th": "บางขุนเทียน",
+    "name_en": "Bang Khun Thian",
+    "camera_count": 0
+  },
+  {
+    "code": "1023",
+    "name_th": "หนองแขม",
+    "name_en": "Nong Khaem",
+    "camera_count": 0
+  },
+  {
+    "code": "1036",
+    "name_th": "ดอนเมือง",
+    "name_en": "Don Mueang",
+    "camera_count": 0
+  }
+]

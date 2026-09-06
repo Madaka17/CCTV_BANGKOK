@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BMA Traffic CCTV Live Dashboard | ระบบกล้องวงจรปิดและวิเคราะห์การจราจร กทม.</title>
+  
+  <!-- Google Fonts: Prompt & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Prompt', 'Inter', 'sans-serif'],
+          },
+          colors: {
+            bma: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+              800: '#065f46',
+              900: '#064e3b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- 100% Offline Mapbox / MapLibre Engine (No external CDN required) -->
+  <link href="/css/maplibre-gl.css" rel="stylesheet" />
+  <script src="/js/maplibre-gl.js"></script>
+  <script>
+    if (typeof maplibregl !== 'undefined' && typeof mapboxgl === 'undefined') {
+      window.mapboxgl = maplibregl;
+    }
+  </script>
+
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-rose-500 selection:text-white">
+
+  <!-- Top Navigation Bar -->
+  <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        
+        <!-- Brand Logo & Title -->
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-rose-600 via-amber-500 to-emerald-500 flex items-center justify-center shadow-md shadow-rose-500/20">
+            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <h1 class="text-lg font-bold text-white tracking-tight">BMA Traffic AI & CCTV</h1>
+              <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-500/20 text-emerald-400 rounded-full border border-emerald-500/30 flex items-center space-x-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                <span class="font-bold tracking-wide">วิเคราะห์สภาพจราจรสด</span>
+              </span>
+            </div>
+            <p class="text-xs text-slate-400 hidden sm:block">ระบบกล้องวงจรปิด 611 จุด พร้อมวิเคราะห์ความหนาแน่นและสภาพจราจรแบบเรียลไทม์</p>
+          </div>
+        </div>
+
+        <!-- Quick View Tabs -->
+        <div class="flex items-center space-x-1 sm:space-x-2 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60">
+          <button id="tab-grid" class="view-tab active px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-sm cursor-pointer">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+            <span>ตารางกล้อง</span>
+          </button>
+          
+          <button id="tab-map" class="view-tab px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1.5 text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+            <span>แผนที่จราจร (Map)</span>
+          </button>
+
+          <button id="tab-wall" class="view-tab px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1.5 text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+            <span>Multi-View <span id="wall-count-badge" class="ml-1 px-1.5 py-0.2 text-[10px] bg-rose-500/30 text-rose-300 rounded-full font-bold">4</span></span>
+          </button>
+
+          <button id="tab-api" class="view-tab px-2.5 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1 text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer" title="คู่มือดึงสตรีมไปยัง Dashboard / Grafana">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+            <span class="hidden md:inline">API</span>
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </header>
+
+  <!-- Traffic Analysis City Overview Banner -->
+  <section class="bg-slate-900/95 border-b border-slate-800 px-4 sm:px-6 lg:px-8 py-2.5">
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
+      
+      <!-- Traffic Stats Pills -->
+      <div class="flex items-center space-x-2 text-xs w-full md:w-auto overflow-x-auto no-scrollbar">
+        <span class="text-slate-400 font-bold whitespace-nowrap flex items-center space-x-1.5">
+          <svg class="w-4 h-4 text-emerald-400 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <span>⏱️ สภาพความหนาแน่น (ย้อนหลัง 5 นาที):</span>
+        </span>
+        
+        <button id="filter-traffic-all" class="traffic-filter-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold border border-slate-700 transition-colors whitespace-nowrap active cursor-pointer" data-traffic="all">
+          ทั้งหมด (611 จุด)
+        </button>
+
+        <button id="filter-traffic-flowing" class="traffic-filter-btn px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-semibold border border-emerald-500/30 transition-colors whitespace-nowrap flex items-center space-x-1.5 cursor-pointer" data-traffic="flowing">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span>🟢 คล่องตัว: <span id="stat-flowing-count">111</span> จุด (<span id="stat-flowing-pct">18.2%</span>)</span>
+        </button>
+
+        <button id="filter-traffic-moderate" class="traffic-filter-btn px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-semibold border border-amber-500/30 transition-colors whitespace-nowrap flex items-center space-x-1.5 cursor-pointer" data-traffic="moderate">
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+          <span>🟡 ชะลอตัว: <span id="stat-moderate-count">349</span> จุด (<span id="stat-moderate-pct">57.1%</span>)</span>
+        </button>
+
+        <button id="filter-traffic-congested" class="traffic-filter-btn px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-semibold border border-rose-500/30 transition-colors whitespace-nowrap flex items-center space-x-1.5 cursor-pointer" data-traffic="congested">
+          <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+          <span>🔴 ติดขัด: <span id="stat-congested-count">151</span> จุด (<span id="stat-congested-pct">24.7%</span>)</span>
+        </button>
+
+        <span id="stat-avg-density-pill" class="px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-semibold whitespace-nowrap hidden sm:inline-flex items-center space-x-1">
+          <span>ความหนาแน่นเฉลี่ย กทม.:</span>
+          <b id="stat-avg-density-val" class="text-white">55.6%</b>
+        </span>
+      </div>
+
+      <!-- Ratio Progress Bar -->
+      <div class="w-full md:w-64 flex flex-col space-y-1">
+        <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex shadow-inner">
+          <div id="bar-flowing" class="h-full bg-emerald-500 transition-all duration-500" style="width: 18.2%" title="คล่องตัว 18.2%"></div>
+          <div id="bar-moderate" class="h-full bg-amber-400 transition-all duration-500" style="width: 57.1%" title="ชะลอตัว 57.1%"></div>
+          <div id="bar-congested" class="h-full bg-rose-500 transition-all duration-500" style="width: 24.7%" title="ติดขัด 24.7%"></div>
+        </div>
+        <div class="flex justify-between text-[10px] text-slate-400 font-mono">
+          <span class="text-emerald-400"><span id="lbl-flowing-pct">18%</span> คล่องตัว</span>
+          <span class="text-amber-400"><span id="lbl-moderate-pct">57%</span> ชะลอตัว</span>
+          <span class="text-rose-400"><span id="lbl-congested-pct">25%</span> ติดขัด</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Filter & Control Toolbar -->
+  <section class="bg-slate-900 border-b border-slate-800 py-3 shadow-inner">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-3">
+      
+      <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+        
+        <!-- Search Box -->
+        <div class="sm:col-span-5 relative">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+          </div>
+          <input 
+            type="text" 
+            id="search-input" 
+            placeholder="ค้นหาชื่อแยก, รหัสกล้อง (#603), ถนน, เขต..." 
+            class="w-full pl-9 pr-8 py-2 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent transition-all"
+          />
+          <button id="clear-search" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200 hidden cursor-pointer">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+
+        <!-- Filter by เขต / อำเภอ (Bangkok Districts) -->
+        <div class="sm:col-span-4 relative">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-rose-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
+          </div>
+          <select 
+            id="district-select" 
+            class="w-full pl-9 pr-8 py-2 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent transition-all cursor-pointer appearance-none"
+          >
+            <option value="all">📍 ทุกเขตในกรุงเทพฯ (ทั้งหมด 611 กล้อง)</option>
+          </select>
+          <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+          </div>
+        </div>
+
+        <!-- Live Streaming Mode Controls & Sort -->
+        <div class="sm:col-span-3 flex items-center justify-between sm:justify-end space-x-2">
+          
+          <!-- Live All Toggle Button -->
+          <button 
+            id="btn-toggle-live-all" 
+            class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-rose-500/30 flex items-center space-x-1.5 border border-rose-400/30 cursor-pointer"
+            title="เปิด/ปิดการสตรีมสดพร้อมกันทุกกล้อง"
+          >
+            <span class="w-2 h-2 rounded-full bg-white animate-ping"></span>
+            <span id="live-all-text">สตรีมสด: ON</span>
+          </button>
+
+          <!-- Smooth Motion Toggle Button -->
+          <button 
+            id="btn-toggle-smooth" 
+            class="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-emerald-500/30 flex items-center space-x-1 border border-emerald-400/30 cursor-pointer"
+            title="เปิด/ปิดโหมดภาพสมูท (Motion Smoothing)"
+          >
+            <span>✨ ภาพสมูท: ON</span>
+          </button>
+
+          <!-- Sort Selector -->
+          <select id="sort-select" class="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-xl text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-rose-500 cursor-pointer" title="เรียงลำดับ">
+            <option value="traffic">🔥 ความหนาแน่นสูงสุด (เฉลี่ย 5 นาที)</option>
+            <option value="density_asc">🌱 ความหนาแน่นต่ำสุด (คล่องตัวสุด)</option>
+            <option value="name">ชื่อกล้อง (ก-ฮ)</option>
+            <option value="district">เขต/อำเภอ</option>
+            <option value="id">รหัสกล้อง (#)</option>
+          </select>
+
+        </div>
+
+      </div>
+
+      <!-- Quick Preset Tag Filters & Live Count -->
+      <div class="flex items-center justify-between overflow-x-auto pb-1 text-xs gap-3">
+        <div class="flex items-center space-x-2 no-scrollbar">
+          <span class="text-slate-400 whitespace-nowrap flex items-center space-x-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>
+            <span>พื้นที่ยอดนิยม:</span>
+          </span>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="all">ทั้งหมด</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="bridge">สะพานข้ามแม่น้ำ</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="cbd">ย่านธุรกิจ (CBD)</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="dusit">เขตดุสิต (97)</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="ratchathewi">เขตราชเทวี (55)</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="phranakhon">เขตพระนคร (51)</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="chatuchak">เขตจตุจักร (35)</button>
+          <button class="quick-preset-btn px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer" data-preset="thonburi">ฝั่งธนบุรี</button>
+        </div>
+
+        <div class="flex items-center space-x-2 whitespace-nowrap flex-shrink-0">
+          <span id="filtered-count" class="text-xs font-semibold px-2.5 py-1 bg-slate-800 text-rose-400 rounded-lg border border-slate-700">
+            กำลังโหลด...
+          </span>
+          <span id="active-live-count" class="text-xs font-semibold px-2.5 py-1 bg-rose-500/10 text-rose-300 rounded-lg border border-rose-500/20 flex items-center space-x-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>
+            <span>กำลังสตรีมสด 0 กล้อง</span>
+          </span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Main View Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- VIEW 1: Camera Grid -->
+    <div id="view-grid" class="view-panel space-y-6">
+      
+      <!-- Cards Grid -->
+      <div id="cameras-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+        <!-- Camera cards rendered here -->
+      </div>
+
+      <!-- Pagination & Load More -->
+      <div id="pagination-container" class="flex flex-col sm:flex-row items-center justify-between pt-6 border-t border-slate-800 gap-4">
+        <div class="text-xs text-slate-400">
+          แสดงรายการที่ <span id="page-start" class="font-semibold text-slate-200">1</span> - <span id="page-end" class="font-semibold text-slate-200">24</span> จากทั้งหมด <span id="page-total" class="font-semibold text-slate-200">611</span> กล้อง
+        </div>
+        <div class="flex items-center space-x-2">
+          <button id="btn-prev-page" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer">
+            ก่อนหน้า
+          </button>
+          <div id="page-numbers" class="flex items-center space-x-1 text-xs">
+            <!-- Dynamic Page Pills -->
+          </div>
+          <button id="btn-next-page" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer">
+            ถัดไป
+          </button>
+          <select id="page-size-select" class="ml-2 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 cursor-pointer">
+            <option value="12">12 กล้อง/หน้า</option>
+            <option value="24" selected>24 กล้อง/หน้า</option>
+            <option value="48">48 กล้อง/หน้า</option>
+            <option value="96">96 กล้อง/หน้า</option>
+            <option value="650">แสดงทั้งหมด (611 กล้อง)</option>
+          </select>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- VIEW 2: Map View (100% Offline Bangkok Map) -->
+    <div id="view-map" class="view-panel hidden space-y-4">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-900/80 p-3 rounded-2xl border border-slate-800 shadow-md">
+        
+        <!-- Legend & Camera Counter -->
+        <div class="flex flex-wrap items-center gap-3 text-xs">
+          <span class="font-bold text-white flex items-center space-x-1.5">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+            <span>แผนที่จราจร กทม. (ออฟไลน์)</span>
+          </span>
+          <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 flex items-center space-x-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            <span>100% Offline (ไม่ต้องใช้ API Key)</span>
+          </span>
+          <span class="text-slate-600 hidden sm:inline">|</span>
+          <span id="map-cameras-count" class="text-slate-200 font-bold">แสดง 611 จุด</span>
+          <span class="text-slate-600 hidden sm:inline">|</span>
+          <div class="flex items-center space-x-3 text-slate-300">
+            <span class="inline-flex items-center space-x-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span><span>คล่องตัว</span></span>
+            <span class="inline-flex items-center space-x-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span><span>ชะลอตัว</span></span>
+            <span class="inline-flex items-center space-x-1"><span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span><span>ติดขัด</span></span>
+          </div>
+        </div>
+
+        <!-- Controls: Offline Style Switcher, 3D Tilt, Reset -->
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Style Switcher Buttons -->
+          <div class="flex items-center space-x-1 bg-slate-800/90 p-1 rounded-xl border border-slate-700/70 text-xs">
+            <button id="map-style-dark" class="map-style-btn px-2.5 py-1 rounded-lg bg-rose-600 text-white font-semibold transition-all cursor-pointer active" data-style="dark">🌙 โหมดมืด</button>
+            <button id="map-style-streets" class="map-style-btn px-2.5 py-1 rounded-lg text-slate-300 hover:text-white transition-all cursor-pointer" data-style="streets">🗺️ ถนนทั่วไป</button>
+          </div>
+
+          <!-- 3D Tilt Toggle -->
+          <button id="btn-toggle-3d" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition-colors flex items-center space-x-1 cursor-pointer" title="สลับมุมมอง 3D Tilt 50°">
+            <span>📐 3D Tilt</span>
+          </button>
+
+          <!-- Reset View -->
+          <button id="btn-reset-map" class="px-2.5 py-1.5 bg-slate-800 hover:bg-rose-600 hover:text-white text-slate-300 rounded-xl text-xs border border-slate-700 transition-all cursor-pointer" title="รีเซ็ตตำแหน่งกลับจุดศูนย์กลางกรุงเทพฯ">
+            🎯 รีเซ็ต กทม.
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Map Canvas Container (map-dark-tiles class for clean dark theme without watermark) -->
+      <div class="h-[75vh] w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
+        <div id="map" class="h-full w-full z-10 bg-slate-950 map-dark-tiles"></div>
+      </div>
+    </div>
+
+    <!-- VIEW 3: Multi-View / Wall Mode -->
+    <div id="view-wall" class="view-panel hidden space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center space-x-2">
+            <span>📺 CCTV Wall Monitor (โหมดเฝ้าระวังพร้อมกัน)</span>
+          </h2>
+          <p class="text-xs text-slate-400">สตรีมภาพสดพร้อมกันแบบ Real-time พร้อมแสดงสถานะการจราจรแต่ละจุด</p>
+        </div>
+        <div class="flex items-center space-x-2">
+          <button id="wall-grid-2x2" class="wall-layout-btn px-2.5 py-1 rounded bg-rose-600 text-white text-xs font-semibold cursor-pointer">2x2 (4 จอ)</button>
+          <button id="wall-grid-3x3" class="wall-layout-btn px-2.5 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold cursor-pointer">3x3 (9 จอ)</button>
+          <button id="btn-clear-wall" class="px-2.5 py-1 rounded bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 text-xs font-semibold border border-rose-500/30 cursor-pointer">ล้างรายการ</button>
+        </div>
+      </div>
+
+      <div id="wall-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Live streams in wall -->
+      </div>
+    </div>
+
+    <!-- VIEW 4: API & Embed Integration Guide -->
+    <div id="view-api" class="view-panel hidden space-y-6 max-w-4xl mx-auto">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center font-bold text-lg">
+            📡
+          </div>
+          <div>
+            <h2 class="text-lg font-bold text-white">API การดึงภาพและผลวิเคราะห์สภาพจราจร</h2>
+            <p class="text-xs text-slate-400">สำหรับนำข้อมูลสภาพจราจรและภาพสตรีมไปใช้ในระบบภายนอก</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+          <div class="bg-slate-800/80 p-4 rounded-xl border border-slate-700 space-y-2">
+            <span class="text-xs font-bold text-emerald-400">1. Traffic Analysis API</span>
+            <p class="text-xs text-slate-300">ดึงผลวิเคราะห์การจราจร คล่องตัว/ติดขัด ทั้ง 611 จุด</p>
+            <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-xs text-emerald-300 select-all overflow-x-auto">
+              GET /api/traffic-analysis
+            </div>
+          </div>
+
+          <div class="bg-slate-800/80 p-4 rounded-xl border border-slate-700 space-y-2">
+            <span class="text-xs font-bold text-rose-400">2. MJPEG Stream</span>
+            <p class="text-xs text-slate-300">สตรีมวิดีโอต่อเนื่องด้วย Continuous Pipeline</p>
+            <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-xs text-rose-300 select-all overflow-x-auto">
+              GET /api/stream/{cameraId}
+            </div>
+          </div>
+
+          <div class="bg-slate-800/80 p-4 rounded-xl border border-slate-700 space-y-2">
+            <span class="text-xs font-bold text-teal-400">3. Live Snapshot</span>
+            <p class="text-xs text-slate-300">ดึงภาพนิ่ง JPEG ล่าสุด (ความเร็ว 0ms จาก Cache)</p>
+            <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-xs text-teal-300 select-all overflow-x-auto">
+              GET /api/snapshot/{cameraId}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Live Player Modal (with Ultra-Smooth 60 FPS Canvas Motion Interpolator & AI Analysis Panel) -->
+  <div 
+    id="player-modal" 
+    onclick="if(event.target === this) closeModal()" 
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/85 backdrop-blur-md hidden opacity-0 transition-opacity duration-200 cursor-pointer"
+  >
+    <div 
+      class="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh] cursor-default relative"
+      onclick="event.stopPropagation()"
+    >
+      
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-900/90">
+        <div class="flex items-center space-x-3">
+          <div id="modal-traffic-dot" class="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-pulse"></div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <span id="modal-camera-id" class="text-xs font-mono font-bold px-2 py-0.5 bg-slate-800 text-rose-400 rounded">#603</span>
+              <h3 id="modal-camera-name" class="text-sm font-bold text-white truncate max-w-sm sm:max-w-md">แยกสีลม-นราธิวาส</h3>
+            </div>
+            <p id="modal-camera-district" class="text-xs text-slate-400">เขตบางรัก | ถ.สีลม</p>
+          </div>
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <!-- Traffic Pill in Header -->
+          <span id="modal-traffic-badge" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1">
+            <span>🟢 การจราจรคล่องตัว</span>
+          </span>
+
+          <!-- Close Button -->
+          <button 
+            id="modal-close" 
+            onclick="closeModal()" 
+            type="button"
+            class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 hover:scale-110 active:scale-95 transition-all flex items-center justify-center cursor-pointer"
+            title="ปิดหน้าจอ (Esc)"
+          >
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal Video Viewport (HTML5 Canvas 60 FPS Smooth Interpolation Engine) -->
+      <div class="relative bg-black flex items-center justify-center aspect-video sm:min-h-[400px] overflow-hidden group">
+        <!-- 60 FPS Interpolated Canvas for Ultra Smooth Motion -->
+        <canvas id="modal-canvas" width="600" height="399" class="w-full h-full object-contain"></canvas>
+
+        <!-- Loading Spinner -->
+        <div id="modal-spinner" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/70 text-rose-400 space-y-2 z-10">
+          <svg class="animate-spin w-8 h-8" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <span class="text-xs text-slate-300">กำลังประมวลผลเฟรมภาพความลื่นไหลสูง...</span>
+        </div>
+
+        <!-- Mode Overlay Badge -->
+        <div class="absolute top-3 left-3 px-2 py-1 bg-black/70 backdrop-blur-md rounded-md text-[11px] font-bold text-emerald-400 flex items-center space-x-1.5 border border-emerald-500/30 pointer-events-none z-10">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="modal-viewport-mode-text">✨ 60 FPS ULTRA SMOOTH MOTION</span>
+        </div>
+
+        <!-- Timestamp & Speed -->
+        <div class="absolute top-3 right-3 px-2 py-1 bg-black/70 backdrop-blur-md rounded-md text-[11px] font-mono text-slate-300 border border-slate-700 pointer-events-none z-10 flex items-center space-x-2">
+          <span id="modal-fps-badge" class="text-emerald-400 font-bold">60 FPS</span>
+          <span>|</span>
+          <span id="modal-timestamp">--:--:--</span>
+        </div>
+      </div>
+
+      <!-- Traffic Intelligence & 5-Minute Rolling Analysis Panel -->
+      <div class="px-5 py-3.5 bg-slate-950/80 border-t border-slate-800/80 space-y-3">
+        <!-- Top Metrics Row -->
+        <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs items-center">
+          
+          <!-- Condition & Trend Badge -->
+          <div class="sm:col-span-4 flex items-center space-x-2">
+            <span class="text-slate-400">สถานะจราจร:</span>
+            <span id="modal-traffic-status-text" class="font-bold text-emerald-400">🟢 คล่องตัว</span>
+            <span id="modal-traffic-trend-badge" class="px-2 py-0.5 text-[10px] font-semibold rounded-md bg-slate-800 text-slate-300 border border-slate-700">→ สภาพคงที่</span>
+          </div>
+
+          <!-- 5-Minute Average Density Meter -->
+          <div class="sm:col-span-5 flex flex-col space-y-1">
+            <div class="flex justify-between text-[11px]">
+              <span class="text-slate-400">ความหนาแน่นเฉลี่ยย้อนหลัง 5 นาที:</span>
+              <span id="modal-traffic-density-text" class="font-bold text-slate-200">54% (ปานกลาง)</span>
+            </div>
+            <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+              <div id="modal-traffic-density-bar" class="h-full bg-emerald-500 rounded-full transition-all duration-300" style="width: 54%"></div>
+            </div>
+          </div>
+
+          <!-- Estimated Speed -->
+          <div class="sm:col-span-3 flex items-center justify-between sm:justify-end space-x-2">
+            <span class="text-slate-400">ความเร็วเฉลี่ย:</span>
+            <span id="modal-traffic-speed" class="font-bold text-slate-200 font-mono text-xs">45-55 กม./ชม.</span>
+          </div>
+
+        </div>
+
+        <!-- AI Computer Vision Real-Time Metrics (Accurate Edge & Motion Analytics) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800/60 text-[11px]">
+          <div class="bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-800 flex items-center justify-between shadow-inner">
+            <span class="text-slate-400">ขอบรถ (Sobel Edge):</span>
+            <span id="modal-cv-edge" class="font-mono font-bold text-emerald-400">--%</span>
+          </div>
+          <div class="bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-800 flex items-center justify-between shadow-inner">
+            <span class="text-slate-400">การเคลื่อนที่ (Motion):</span>
+            <span id="modal-cv-motion" class="font-mono font-bold text-slate-200">--%</span>
+          </div>
+          <div class="bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-800 flex items-center justify-between shadow-inner">
+            <span class="text-slate-400">ความเร็วจริง (CV):</span>
+            <span id="modal-cv-speed" class="font-mono font-bold text-rose-400">-- กม./ชม.</span>
+          </div>
+          <div class="bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-800 flex items-center justify-between shadow-inner">
+            <span class="text-slate-400">โมเดลวิเคราะห์:</span>
+            <span class="font-bold text-cyan-400 text-[10px] flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+              <span>AI Vision Core</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 5-Minute Detailed Rolling Timeline Sparkline -->
+        <div class="pt-2 border-t border-slate-800/60">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
+            <span class="flex items-center space-x-1.5 font-medium">
+              <svg class="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span>ไทม์ไลน์ความหนาแน่นย้อนหลัง 5 นาที (ทีละ 1 นาที):</span>
+            </span>
+            <span id="modal-traffic-updated-at" class="text-[10px] text-slate-500 font-mono">อัปเดตล่าสุด</span>
+          </div>
+          <div id="modal-traffic-history-container" class="grid grid-cols-6 gap-2 text-center">
+            <!-- 6 historical minute blocks rendered dynamically in app.js -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Player Controls & Speed Footer -->
+      <div class="p-4 bg-slate-900 border-t border-slate-800 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          
+          <!-- Playback Speed Controls -->
+          <div class="flex items-center space-x-1.5">
+            <span class="text-xs text-slate-400 mr-1 hidden sm:inline">ความเร็วเล่น:</span>
+            <button class="modal-speed-btn px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold border border-slate-700 cursor-pointer" data-speed="0.5">0.5x</button>
+            <button class="modal-speed-btn px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold border border-slate-700 cursor-pointer" data-speed="1.0">1.0x</button>
+            <button class="modal-speed-btn px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-bold border border-rose-500 shadow-sm cursor-pointer active" data-speed="1.6">1.6x (สมูท)</button>
+            <button class="modal-speed-btn px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold border border-slate-700 cursor-pointer" data-speed="2.5">2.5x (เร็ว)</button>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex items-center space-x-2">
+            <button id="modal-btn-toggle" class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg flex items-center space-x-1 transition-colors cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span id="modal-toggle-text">พักการเล่น</span>
+            </button>
+            <button id="modal-btn-snapshot" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center space-x-1 border border-slate-700 transition-colors cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              <span>บันทึกภาพ</span>
+            </button>
+            <button id="modal-btn-pin-wall" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center space-x-1 border border-slate-700 transition-colors cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+              <span>+ Wall</span>
+            </button>
+            <button onclick="closeModal()" type="button" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 transition-colors cursor-pointer">
+              ปิดหน้าต่าง
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Location Coordinates -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800 text-[11px] text-slate-400">
+          <div><span class="text-slate-500">พิกัด GPS:</span> <span id="modal-coords" class="text-slate-200 font-mono">13.7262, 100.5279</span></div>
+          <div><span class="text-slate-500">ทิศทาง:</span> <span id="modal-direction" class="text-slate-200">-</span></div>
+          <div><span class="text-slate-500">ระบบประมวลผล:</span> <span class="text-emerald-400 font-semibold">HTML5 60 FPS Canvas</span></div>
+          <div><span class="text-slate-500">Google Maps:</span> <a id="modal-gmaps-link" href="#" target="_blank" class="text-rose-400 hover:underline">เปิดดูแผนที่จริง</a></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 px-4 py-2.5 bg-rose-600 text-white rounded-xl shadow-xl text-xs font-semibold flex items-center space-x-2 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+    <span id="toast-text">ข้อความ</span>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
