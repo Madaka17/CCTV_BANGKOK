@@ -156,6 +156,22 @@ async function upload(pathname, body, contentType) {
   return `${process.env.R2_PUBLIC_BASE_URL.replace(/\/+$/, '')}/${pathname}`;
 }
 
+// The bucket's public URL is not a secret - every visitor's browser fetches
+// these images directly - so it lives in the repo rather than in a dashboard
+// setting that has to be kept in step by hand. Written on every run so it
+// cannot drift from where frames actually went.
+function writeFramesConfig(baseUrl) {
+  const configPath = path.join(ROOT, 'frames.config.json');
+  const config = { baseUrl, intervalSeconds: INTERVAL_SECONDS };
+
+  try {
+    const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (existing.baseUrl === config.baseUrl && existing.intervalSeconds === config.intervalSeconds) return;
+  } catch (err) { /* no config yet, or unreadable - write a fresh one */ }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+}
+
 // --- Sweep -----------------------------------------------------------------
 
 async function mapWithConcurrency(items, limit, fn) {
@@ -219,10 +235,10 @@ async function main() {
   const manifestUrl = await sweep(cameraIds);
   const baseUrl = manifestUrl.replace(/\/frames\/manifest\.json$/, '');
   if (!DRY_RUN) {
+    writeFramesConfig(baseUrl);
     console.log('');
     console.log(`Frames are live at ${baseUrl}/frames/<id>.jpg`);
-    console.log('Set this on the Vercel project (Settings -> Environment Variables), then redeploy:');
-    console.log(`  FRAMES_BASE_URL=${baseUrl}`);
+    console.log('Wrote frames.config.json - commit it so the deployed site reads the same URL.');
     console.log('');
   }
 

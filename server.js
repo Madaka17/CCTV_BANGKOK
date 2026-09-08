@@ -575,9 +575,20 @@ const MIME_TYPES = {
 };
 
 // Frames published to Cloudflare R2 by publisher/publish-frames.js, for when
-// the BMA site cannot be reached from here. FRAMES_BASE_URL is the bucket's
-// public origin, printed by the publisher's first run.
-const FRAMES_BASE_URL = (process.env.FRAMES_BASE_URL || '').replace(/\/+$/, '');
+// the BMA site cannot be reached from here.
+//
+// The bucket's public origin is not a secret, so the publisher commits it to
+// frames.config.json rather than making someone keep a dashboard variable in
+// step by hand. FRAMES_BASE_URL still overrides it.
+const FRAMES_BASE_URL = (function resolveFramesBaseUrl() {
+  if (process.env.FRAMES_BASE_URL) return process.env.FRAMES_BASE_URL.replace(/\/+$/, '');
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'frames.config.json'), 'utf8'));
+    return (config.baseUrl || '').replace(/\/+$/, '');
+  } catch (err) {
+    return '';
+  }
+})();
 const publishedFrameUrl = (cameraId) =>
   FRAMES_BASE_URL ? `${FRAMES_BASE_URL}/frames/${encodeURIComponent(cameraId)}.jpg` : null;
 
