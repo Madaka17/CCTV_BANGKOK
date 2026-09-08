@@ -53,8 +53,10 @@ R2 ฟรี = **1,000,000 writes/เดือน** งานนี้เขี�
 
 **2. เปิดให้อ่านแบบสาธารณะ**
 
-ในหน้า bucket → แท็บ **Settings** → หัวข้อ **Public access** → **R2.dev subdomain**
-→ **Allow Access** แล้วพิมพ์ยืนยัน
+ในหน้า bucket → แท็บ **Settings** → เมนูย่อย **Public Development URL** → **Enable**
+แล้วพิมพ์ยืนยัน
+
+> เดิม Cloudflare เรียกหัวข้อนี้ว่า "Public access / R2.dev subdomain" ตอนนี้เปลี่ยนชื่อแล้ว
 
 จะได้ URL หน้าตาแบบ `https://pub-xxxxxxxxxxxx.r2.dev` — **คัดลอกเก็บไว้** นี่คือค่า
 `R2_PUBLIC_BASE_URL`
