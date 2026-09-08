@@ -34,6 +34,21 @@ const ROOT_DIR = (function findRoot() {
 const BMA_BASE = 'https://cpudapp.bangkok.go.th/bmatraffic';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+// Node's fetch sends a bare request. The BMA WAF is stricter about traffic from
+// outside Thailand, so send what a real browser would.
+const BROWSER_HEADERS = {
+  'User-Agent': USER_AGENT,
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache'
+};
+
 // Persistent HTTPS Agent with connection pooling
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -282,7 +297,8 @@ class BmaSessionManager {
       try {
         const res = await bmaQueue.run(() =>
           fetch(`${BMA_BASE}/index.aspx`, {
-            headers: { 'User-Agent': USER_AGENT }
+            headers: BROWSER_HEADERS,
+            signal: AbortSignal.timeout(12000)
           })
         );
         const rawCookie = res.headers.get('set-cookie');
@@ -295,10 +311,12 @@ class BmaSessionManager {
           await bmaQueue.run(() =>
             fetch(`${BMA_BASE}/PlayVideo.aspx?ID=${encodeURIComponent(cameraId)}`, {
               headers: {
-                'User-Agent': USER_AGENT,
+                ...BROWSER_HEADERS,
+                'Sec-Fetch-Site': 'same-origin',
                 'Cookie': cookie,
                 'Referer': `${BMA_BASE}/index.aspx`
-              }
+              },
+              signal: AbortSignal.timeout(12000)
             })
           );
           this.cameraActivations.set(cameraId, Date.now());
@@ -327,10 +345,12 @@ class BmaSessionManager {
       await bmaQueue.run(() => 
         fetch(`${BMA_BASE}/PlayVideo.aspx?ID=${encodeURIComponent(cameraId)}`, {
           headers: {
-            'User-Agent': USER_AGENT,
+            ...BROWSER_HEADERS,
+            'Sec-Fetch-Site': 'same-origin',
             'Cookie': cookie,
             'Referer': `${BMA_BASE}/index.aspx`
-          }
+          },
+          signal: AbortSignal.timeout(12000)
         })
       );
       this.cameraActivations.set(cameraId, Date.now());
@@ -353,10 +373,15 @@ class BmaSessionManager {
       const res = await bmaQueue.run(() => 
         fetch(`${BMA_BASE}/show.aspx?image=${encodeURIComponent(cameraId)}&time=${now}`, {
           headers: {
-            'User-Agent': USER_AGENT,
+            ...BROWSER_HEADERS,
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-origin',
             'Cookie': cookie,
             'Referer': `${BMA_BASE}/PlayVideo.aspx?ID=${encodeURIComponent(cameraId)}`
-          }
+          },
+          signal: AbortSignal.timeout(12000)
         })
       );
 
@@ -549,12 +574,6 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-// Fresh BMA session cookie, bypassing the cache (used by the health check)
-async function freshBmaCookie(cameraId) {
-  bmaSession.cameraSessions.delete(cameraId);
-  return bmaSession.getSessionForCamera(cameraId);
-}
-
 const requestHandler = async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -640,55 +659,45 @@ const requestHandler = async (req, res) => {
     return;
   }
 
-  // Step-by-step check of the upstream BMA handshake, so a blank camera feed
-  // can be told apart from a broken deploy.
+  // Probe the upstream BMA handshake, so a blank camera feed can be told apart
+  // from a broken deploy. Tries several header sets, since the BMA WAF answers
+  // 403 to some clients depending on where the request comes from.
   if (pathname === '/api/health/bma') {
     const cameraId = (parsedUrl.query.id || (cameras[0] && cameras[0].id) || '1078').toString();
-    const steps = [];
-    const step = async (name, fn) => {
-      const t = Date.now();
-      try {
-        const info = await fn();
-        steps.push({ step: name, ok: true, ms: Date.now() - t, ...info });
-        return info;
-      } catch (err) {
-        steps.push({ step: name, ok: false, ms: Date.now() - t, error: err.name + ': ' + err.message });
-        return null;
-      }
+
+    const variants = {
+      'user-agent only': { 'User-Agent': USER_AGENT },
+      'full browser headers': BROWSER_HEADERS
     };
 
-    const index = await step('GET index.aspx', async () => {
-      const r = await fetch(`${BMA_BASE}/index.aspx`, {
-        headers: { 'User-Agent': USER_AGENT },
-        signal: AbortSignal.timeout(15000)
-      });
-      const body = await r.text();
-      return {
-        status: r.status,
-        contentType: r.headers.get('content-type'),
-        setCookie: r.headers.get('set-cookie') ? 'present' : 'MISSING',
-        bytes: body.length
-      };
-    });
-
-    if (index && index.setCookie === 'present') {
-      const cookie = await freshBmaCookie(cameraId);
-      await step(`GET show.aspx?image=${cameraId}`, async () => {
-        const r = await fetch(`${BMA_BASE}/show.aspx?image=${encodeURIComponent(cameraId)}&time=${Date.now()}`, {
-          headers: {
-            'User-Agent': USER_AGENT,
-            'Cookie': cookie || '',
-            'Referer': `${BMA_BASE}/PlayVideo.aspx?ID=${encodeURIComponent(cameraId)}`
-          },
-          signal: AbortSignal.timeout(15000)
+    const results = [];
+    for (const [name, headers] of Object.entries(variants)) {
+      const t = Date.now();
+      try {
+        const r = await fetch(`${BMA_BASE}/index.aspx`, { headers, signal: AbortSignal.timeout(15000) });
+        const body = await r.text();
+        results.push({
+          variant: name,
+          ms: Date.now() - t,
+          status: r.status,
+          setCookie: r.headers.get('set-cookie') ? 'present' : 'MISSING',
+          server: r.headers.get('server'),
+          via: r.headers.get('via') || r.headers.get('cf-ray') || r.headers.get('x-cdn'),
+          bytes: body.length,
+          snippet: body.replace(/\s+/g, ' ').slice(0, 400)
         });
-        const buf = Buffer.from(await r.arrayBuffer());
-        return { status: r.status, contentType: r.headers.get('content-type'), bytes: buf.length };
-      });
+      } catch (err) {
+        results.push({ variant: name, ms: Date.now() - t, error: err.name + ': ' + err.message });
+      }
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ cameraId, serverless: IS_SERVERLESS, region: process.env.VERCEL_REGION || null, steps }, null, 2));
+    res.end(JSON.stringify({
+      cameraId,
+      serverless: IS_SERVERLESS,
+      region: process.env.VERCEL_REGION || null,
+      results
+    }, null, 2));
     return;
   }
 
