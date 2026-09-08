@@ -26,7 +26,14 @@ https://cctv-bangkok.tail95e28b.ts.net
 ```sh
 npm start          # ต้องรันอยู่ ไม่งั้นคนที่เข้ามาเจอ error
 npm run share:ts   # ตั้งค่า Funnel ครั้งเดียวพอ
+
+# อยากให้คนอื่นเห็นกรอบตรวจจับรถด้วย ต้องเปิดตัวนี้แยกอีกตัว
+detector/.venv/Scripts/python.exe detector/detect.py --weights detector/weights/yolo11x.pt
 ```
+
+Funnel เปิดให้แค่พอร์ต 3000 ส่วนตัวตรวจจับเป็นคนละโปรเซสที่พอร์ต 5056 ซึ่งเว็บเซิร์ฟเวอร์
+ต่อให้เองที่ `/api/detections` ถ้าไม่เปิด เว็บยังใช้ได้ปกติแต่ไม่มีตัวเลขรถและไม่มีกรอบ
+(`/api/detections` จะตอบ `{"enabled": false}`)
 
 | คำสั่ง | ทำอะไร |
 |---|---|
