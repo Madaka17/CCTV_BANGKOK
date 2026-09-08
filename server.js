@@ -635,6 +635,8 @@ const MIME_TYPES = {
 // browser plays them directly, so they work from a deployed host too - which
 // the BMA cameras never can.
 const VIDEO_CATALOGUE_URL = 'https://camera.longdo.com/feed/?command=json';
+// detector/detect.py, when it is running
+const DETECTOR_URL = (process.env.DETECTOR_URL || 'http://127.0.0.1:5056').replace(/\/+$/, '');
 // Titles are prefixed with the province, so that is the reliable filter -
 // coordinates alone drag in Nonthaburi and Pathum Thani.
 const BKK_PREFIX = '(\u0e01\u0e23\u0e38\u0e07\u0e40\u0e17\u0e1e\u0e21\u0e2b\u0e32\u0e19\u0e04\u0e23)';
@@ -999,6 +1001,34 @@ const requestHandler = async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // Vehicle detection, from detector/detect.py. It is optional: when the
+  // detector is not running these answer "off" rather than failing, so the
+  // page simply shows no counts.
+  if (pathname === '/api/detections' || pathname.startsWith('/api/detect-frame/')) {
+    const isFrame = pathname.startsWith('/api/detect-frame/');
+    const target = isFrame
+      ? `${DETECTOR_URL}/frame/${encodeURIComponent(pathname.slice('/api/detect-frame/'.length))}`
+      : `${DETECTOR_URL}/detections`;
+
+    try {
+      const r = await fetch(target, { signal: AbortSignal.timeout(10000) });
+      const body = Buffer.from(await r.arrayBuffer());
+      res.writeHead(r.status, {
+        'Content-Type': r.headers.get('content-type') || 'application/octet-stream',
+        'Cache-Control': 'no-store'
+      });
+      res.end(body);
+    } catch (err) {
+      if (isFrame) {
+        sendPlaceholder(res);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ enabled: false, detections: [] }));
+      }
+    }
     return;
   }
 

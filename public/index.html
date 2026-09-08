@@ -68,6 +68,16 @@
       <div class="flex items-center space-x-2">
         <span id="clock" class="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-slate-300"></span>
         <span id="camera-count" class="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-xs font-semibold text-emerald-300"></span>
+        <span id="playing-count" class="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-slate-400"></span>
+        <select id="max-playing" title="จำนวนกล้องที่เล่นพร้อมกัน" class="px-2 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-300 cursor-pointer">
+          <option value="1">เล่นทีละ 1</option>
+          <option value="2">พร้อมกัน 2</option>
+          <option value="3" selected>พร้อมกัน 3</option>
+          <option value="6">พร้อมกัน 6</option>
+          <option value="19">ทั้งหมด</option>
+        </select>
+        <span id="vehicle-total" class="hidden px-3 py-1.5 rounded-xl bg-sky-500/15 border border-sky-500/30 text-xs font-semibold text-sky-300"></span>
+        <button id="btn-boxes" class="hidden px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer">แสดงกรอบรถ</button>
         <button id="btn-refresh" class="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer">
           โหลดใหม่
         </button>

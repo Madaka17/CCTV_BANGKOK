@@ -10,6 +10,14 @@ const state = {
   cameras: [],
   players: new Map(), // camera id -> Hls instance
   view: 'cams',
+  detections: new Map(), // camera id -> reading
+  showBoxes: false,
+  // Measured against these servers: eight parallel fetches shared 2.5 Mbps in
+  // total, while the streams themselves run 0.3-6.8 Mbps each. Playing all
+  // nineteen at once cannot work, so only a few run at a time.
+  maxPlaying: Number(localStorage.getItem('maxPlaying') || 3),
+  playing: [],        // camera ids, oldest first
+  observer: null,
   map: null,
   markers: []
 };
@@ -55,12 +63,19 @@ function render() {
   }
 
   grid.innerHTML = state.cameras.map(cam => `
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col">
+    <div data-cam-id="${escapeHtml(cam.id)}" class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col">
       <div class="relative bg-black aspect-video flex items-center justify-center">
-        <video id="v-${cssId(cam.id)}" class="w-full h-full object-contain" muted playsinline autoplay
+        <video id="v-${cssId(cam.id)}" class="w-full h-full object-contain" muted playsinline
                poster="${cam.image || ''}"></video>
 
-        <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow flex items-center space-x-1">
+        <button data-play="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
+                class="absolute inset-0 flex items-center justify-center bg-black/45 hover:bg-black/30 transition-colors cursor-pointer">
+          <span class="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+            <svg class="w-6 h-6 text-slate-900 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </span>
+        </button>
+
+        <span id="live-${cssId(cam.id)}" class="hidden absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow items-center space-x-1">
           <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span><span>LIVE</span>
         </span>
 
@@ -70,17 +85,26 @@ function render() {
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
         </button>
 
+        <img id="b-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain hidden" alt="" />
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
       <div class="p-3">
         <h2 class="text-sm font-semibold text-white leading-snug">${escapeHtml(cam.title)}</h2>
         <p class="text-[11px] text-slate-500 mt-1">${escapeHtml(cam.org)}</p>
+        <p id="c-${cssId(cam.id)}" class="text-[11px] text-emerald-400 mt-1 font-medium"></p>
       </div>
     </div>
   `).join('');
 
-  state.cameras.forEach(attachPlayer);
+  grid.querySelectorAll('[data-play]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cam = state.cameras.find(c => c.id === btn.dataset.cam);
+      if (cam) playCamera(cam);
+    });
+  });
+
+  watchVisibility();
 
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -124,7 +148,17 @@ function attachPlayer(cam, prefix = 'v-') {
     return;
   }
 
-  const hls = new window.Hls({ liveDurationInfinity: true, lowLatencyMode: true });
+  // Several of these publish only two 2-second segments, so the defaults
+  // (which want three) stall forever waiting for a window that never arrives.
+  const hls = new window.Hls({
+    liveDurationInfinity: true,
+    liveSyncDurationCount: 1,
+    liveMaxLatencyDurationCount: 4,
+    maxBufferLength: 8,
+    backBufferLength: 0,
+    manifestLoadingTimeOut: 20000,
+    fragLoadingTimeOut: 40000
+  });
   hls.loadSource(cam.hls);
   hls.attachMedia(video);
 
@@ -146,11 +180,155 @@ function attachPlayer(cam, prefix = 'v-') {
   state.players.set(key, hls);
 }
 
+// Only a few streams can run at once, so starting one may stop the oldest.
+function playCamera(cam) {
+  if (state.playing.includes(cam.id)) return;
+
+  while (state.playing.length >= state.maxPlaying) {
+    stopCamera(state.playing[0]);
+  }
+
+  const overlay = document.querySelector(`[data-play="${cssId(cam.id)}"]`);
+  if (overlay) overlay.classList.add('hidden');
+  const live = el('live-' + cssId(cam.id));
+  if (live) { live.classList.remove('hidden'); live.classList.add('flex'); }
+
+  state.playing.push(cam.id);
+  attachPlayer(cam);
+  updatePlayingBadge();
+}
+
+function stopCamera(id) {
+  const hls = state.players.get(id);
+  if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete(id); }
+
+  const video = el('v-' + cssId(id));
+  if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
+
+  const overlay = document.querySelector(`[data-play="${cssId(id)}"]`);
+  if (overlay) overlay.classList.remove('hidden');
+  const live = el('live-' + cssId(id));
+  if (live) { live.classList.add('hidden'); live.classList.remove('flex'); }
+  const msg = el('m-' + cssId(id));
+  if (msg) msg.textContent = '';
+
+  state.playing = state.playing.filter(x => x !== id);
+  updatePlayingBadge();
+}
+
+function updatePlayingBadge() {
+  const b = el('playing-count');
+  if (b) b.textContent = `เล่นอยู่ ${state.playing.length}/${state.maxPlaying}`;
+}
+
+// Start cameras as they scroll into view, and stop them when they leave, so
+// the few streams the connection can carry are the ones being looked at.
+function watchVisibility() {
+  if (state.observer) state.observer.disconnect();
+
+  state.observer = new IntersectionObserver((entries) => {
+    if (state.view !== 'cams' || state.showBoxes) return;
+
+    entries.forEach(entry => {
+      const id = entry.target.dataset.camId;
+      const cam = state.cameras.find(c => c.id === id);
+      if (!cam) return;
+
+      if (entry.isIntersecting) {
+        if (state.playing.length < state.maxPlaying) playCamera(cam);
+      } else if (state.playing.includes(id)) {
+        stopCamera(id);
+      }
+    });
+  }, { threshold: 0.35 });
+
+  document.querySelectorAll('[data-cam-id]').forEach(node => state.observer.observe(node));
+}
+
 function stopAllPlayers() {
   for (const hls of state.players.values()) {
     try { hls.destroy(); } catch (e) { /* already gone */ }
   }
   state.players.clear();
+  state.playing.slice().forEach(stopCamera);
+}
+
+// --- Vehicle detection -----------------------------------------------------
+//
+// Optional: detector/detect.py counts vehicles in a frame from each camera. The
+// endpoint answers with enabled:false when it is not running, and the page
+// simply shows no counts.
+
+async function loadDetections() {
+  try {
+    const res = await fetch('/api/detections');
+    const data = await res.json();
+    const list = data.detections || [];
+
+    state.detections = new Map(list.map(d => [d.id, d]));
+    const on = list.length > 0;
+
+    const toggle = el('btn-boxes');
+    if (toggle) toggle.classList.toggle('hidden', !on);
+
+    const badge = el('vehicle-total');
+    if (badge) {
+      const seen = list.filter(d => d.total !== null);
+      const total = seen.reduce((n, d) => n + d.total, 0);
+      badge.classList.toggle('hidden', !on);
+      badge.textContent = on ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
+    }
+
+    list.forEach(d => {
+      const box = el('c-' + cssId(d.id));
+      if (!box) return;
+      if (d.total === null) {
+        box.textContent = '';
+        return;
+      }
+      const parts = Object.entries(d.counts)
+        .map(([k, n]) => `${LABELS[k] || k} ${n}`)
+        .join(' · ');
+      box.textContent = d.total ? `${d.total} คัน — ${parts}` : 'ไม่พบรถ';
+    });
+  } catch (err) {
+    /* detector off; leave the page as it is */
+  }
+}
+
+const LABELS = { car: 'รถยนต์', motorcycle: 'จยย.', bus: 'รถโดยสาร', truck: 'บรรทุก' };
+
+// Swap each player for the detector's annotated still, and back
+function toggleBoxes() {
+  state.showBoxes = !state.showBoxes;
+  const btn = el('btn-boxes');
+  if (btn) {
+    btn.textContent = state.showBoxes ? 'ดูวิดีโอสด' : 'แสดงกรอบรถ';
+    btn.classList.toggle('bg-rose-600', state.showBoxes);
+    btn.classList.toggle('text-white', state.showBoxes);
+  }
+
+  state.cameras.forEach(cam => {
+    const img = el('b-' + cssId(cam.id));
+    const vid = el('v-' + cssId(cam.id));
+    if (img) img.classList.toggle('hidden', !state.showBoxes);
+    if (vid) vid.classList.toggle('hidden', state.showBoxes);
+  });
+
+  if (state.showBoxes) {
+    stopAllPlayers();
+    refreshBoxImages();
+  } else {
+    watchVisibility();
+  }
+}
+
+function refreshBoxImages() {
+  if (!state.showBoxes) return;
+  state.cameras.forEach(cam => {
+    const img = el('b-' + cssId(cam.id));
+    if (img) img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
+  });
 }
 
 // --- Traffic map -----------------------------------------------------------
@@ -293,7 +471,7 @@ function switchView(view) {
     if (state.map && state.map.isStyleLoaded()) addCameraMarkers();
     loadTrafficIndex();
   } else {
-    state.cameras.forEach(cam => attachPlayer(cam));
+    watchVisibility();
   }
 }
 
@@ -311,7 +489,7 @@ function startClock() {
 // Players hold open connections; a hidden tab does not need them
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopAllPlayers();
-  else if (state.cameras.length) state.cameras.forEach(attachPlayer);
+  else if (state.cameras.length) watchVisibility();
 });
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -322,4 +500,26 @@ document.addEventListener('DOMContentLoaded', () => {
   el('tab-cams').addEventListener('click', () => switchView('cams'));
   el('tab-map').addEventListener('click', () => switchView('map'));
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
+
+  const sel = el('max-playing');
+  if (sel) {
+    sel.value = String(state.maxPlaying);
+    sel.addEventListener('change', () => {
+      state.maxPlaying = Number(sel.value);
+      localStorage.setItem('maxPlaying', sel.value);
+      while (state.playing.length > state.maxPlaying) stopCamera(state.playing[0]);
+      updatePlayingBadge();
+      watchVisibility();
+    });
+  }
+  updatePlayingBadge();
+
+  const boxes = el('btn-boxes');
+  if (boxes) boxes.addEventListener('click', toggleBoxes);
+  loadDetections();
+  setInterval(() => {
+    if (state.view !== 'cams') return;
+    loadDetections();
+    refreshBoxImages();
+  }, 20000);
 });
