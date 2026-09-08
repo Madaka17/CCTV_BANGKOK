@@ -10,3 +10,4 @@ detector/weights/
 __pycache__/
 *.pyc
 tunnel/current-url.txt
+.claude/settings.local.json

@@ -14,6 +14,42 @@ npm run share    # แล้วเปิดตัวนี้
 | `--metrics` | `127.0.0.1:20241` | พอร์ต metrics ของ cloudflared ที่ใช้อ่านชื่อโดเมนกลับมา |
 | `--cloudflared` | `C:\Program Files (x86)\cloudflared\cloudflared.exe` | ที่อยู่ของ cloudflared |
 
+## ลิงก์ถาวร (Tailscale Funnel)
+
+```
+https://cctv-bangkok.tail95e28b.ts.net
+```
+
+ชื่อนี้ไม่เปลี่ยนอีกแล้ว ต่างจาก quick tunnel ข้างบน ตั้งค่าครั้งเดียวแล้วอยู่ข้ามรีบูต
+ไม่ต้องเปิดโปรเซสเลี้ยงไว้ ขอแค่เครื่องนี้ออนไลน์และเว็บเซิร์ฟเวอร์ทำงานอยู่
+
+```sh
+npm start          # ต้องรันอยู่ ไม่งั้นคนที่เข้ามาเจอ error
+npm run share:ts   # ตั้งค่า Funnel ครั้งเดียวพอ
+```
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `tailscale funnel status` | ดูว่าตอนนี้ชี้ไปที่พอร์ตไหน |
+| `tailscale funnel --https=443 off` | ปิดลิงก์สาธารณะ |
+
+### ถ้าต้องตั้งใหม่ หรือย้ายไปเครื่องอื่น
+
+ต้องเปิดสองอย่างในบัญชี Tailscale ก่อน ไม่งั้น `tailscale funnel` จะ**ค้างเงียบ ๆ
+โดยไม่พิมพ์อะไรออกมาเลย** (มันรอให้ไปกดอนุมัติ แต่ข้อความค้างอยู่ใน buffer):
+
+1. **HTTPS Certificates** ที่ https://login.tailscale.com/admin/dns
+2. **funnel node attribute** ที่ https://login.tailscale.com/admin/acls/file
+
+```jsonc
+"nodeAttrs": [
+    { "target": ["autogroup:member"], "attr": ["funnel"] }
+],
+```
+
+เช็คว่าครบหรือยังจาก `tailscale status --json` — `CertDomains` ต้องมีชื่อโดเมน
+และ `Self.CapMap` ต้องมีคีย์ `funnel`
+
 ## ทำไมลิงก์เดิมถึงใช้ไม่ได้
 
 `cloudflared tunnel --url ...` คือ **quick tunnel** ซึ่ง Cloudflare แจกชื่อโดเมนแบบสุ่ม
@@ -36,7 +72,7 @@ Cloudflare ให้ชื่อคงที่ได้เฉพาะ **named 
 |---|---|---|---|
 | โดเมน + named tunnel | ได้ | ใช้ได้ | ต้องมีโดเมนใน Cloudflare |
 | Deploy ขึ้น Vercel (`*.vercel.app`) | ได้ | **ใช้ไม่ได้** | ล็อกอิน Vercel แล้ว deploy — repo นี้มี `vercel.json` พร้อมอยู่แล้ว |
-| Tailscale Funnel (`*.ts.net`) | ได้ | ใช้ได้ | ติดตั้ง Tailscale บนเครื่องนี้แล้วล็อกอิน |
+| Tailscale Funnel (`*.ts.net`) | ได้ | ใช้ได้ | **ใช้ทางนี้อยู่** — ดูหัวข้อ "ลิงก์ถาวร" ข้างบน |
 | Cloudflare Worker (`*.workers.dev`) ชี้มาที่ quick tunnel | ได้ (หน้าบ้าน) | ใช้ได้ | deploy Worker หนึ่งตัว และต้องอัปเดตปลายทางทุกครั้งที่ tunnel เปลี่ยนชื่อ |
 
 การตรวจจับรถต้องรันบนเครื่องที่มี GPU เสมอ Vercel จึงแสดงแผนที่ กล้อง และหน้าคำแนะนำได้
