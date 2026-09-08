@@ -549,6 +549,12 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
+// Fresh BMA session cookie, bypassing the cache (used by the health check)
+async function freshBmaCookie(cameraId) {
+  bmaSession.cameraSessions.delete(cameraId);
+  return bmaSession.getSessionForCamera(cameraId);
+}
+
 const requestHandler = async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -631,6 +637,58 @@ const requestHandler = async (req, res) => {
     };
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(data));
+    return;
+  }
+
+  // Step-by-step check of the upstream BMA handshake, so a blank camera feed
+  // can be told apart from a broken deploy.
+  if (pathname === '/api/health/bma') {
+    const cameraId = (parsedUrl.query.id || (cameras[0] && cameras[0].id) || '1078').toString();
+    const steps = [];
+    const step = async (name, fn) => {
+      const t = Date.now();
+      try {
+        const info = await fn();
+        steps.push({ step: name, ok: true, ms: Date.now() - t, ...info });
+        return info;
+      } catch (err) {
+        steps.push({ step: name, ok: false, ms: Date.now() - t, error: err.name + ': ' + err.message });
+        return null;
+      }
+    };
+
+    const index = await step('GET index.aspx', async () => {
+      const r = await fetch(`${BMA_BASE}/index.aspx`, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(15000)
+      });
+      const body = await r.text();
+      return {
+        status: r.status,
+        contentType: r.headers.get('content-type'),
+        setCookie: r.headers.get('set-cookie') ? 'present' : 'MISSING',
+        bytes: body.length
+      };
+    });
+
+    if (index && index.setCookie === 'present') {
+      const cookie = await freshBmaCookie(cameraId);
+      await step(`GET show.aspx?image=${cameraId}`, async () => {
+        const r = await fetch(`${BMA_BASE}/show.aspx?image=${encodeURIComponent(cameraId)}&time=${Date.now()}`, {
+          headers: {
+            'User-Agent': USER_AGENT,
+            'Cookie': cookie || '',
+            'Referer': `${BMA_BASE}/PlayVideo.aspx?ID=${encodeURIComponent(cameraId)}`
+          },
+          signal: AbortSignal.timeout(15000)
+        });
+        const buf = Buffer.from(await r.arrayBuffer());
+        return { status: r.status, contentType: r.headers.get('content-type'), bytes: buf.length };
+      });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ cameraId, serverless: IS_SERVERLESS, region: process.env.VERCEL_REGION || null, steps }, null, 2));
     return;
   }
 
