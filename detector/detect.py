@@ -36,6 +36,26 @@ VEHICLES = {
 }
 BOX_COLOURS = {2: (80, 200, 12), 3: (4, 222, 254), 5: (255, 120, 20), 7: (32, 32, 255)}
 
+# Motorcycles came back barely at all: 2 of 128 vehicles over 18 frames, on
+# Bangkok roads. They are not being dropped as some other class - the model
+# simply calls them cars. A bike and its rider merge into one small shape, and
+# what does survive as a motorcycle scores far below what a car scores, so the
+# shared floor cuts it. Two things move it, measured on those frames:
+#
+#   floor of its own, 0.15 -> 0.08   motorcycles 2 -> 6
+#   test-time augmentation           motorcycles 6 -> 11, all vehicles 128 -> 187
+#
+# The added boxes sit on real traffic - mostly the far end of the road, which a
+# single pass misses. Augmentation costs about 200ms a frame against 500-700ms,
+# and that fits: focus runs YOLO every third frame at 2 fps, and sweeps are
+# paused while anyone is watching.
+#
+# Measured at night, in rain. Motorcycles are hardest to tell from cars then, so
+# treat these as the floor of what daylight should give.
+MOTORCYCLE = 3
+MOTORCYCLE_CONF = 0.08
+AUGMENT = True
+
 state = {
     "detections": {},   # camid -> reading
     "frames": {},       # camid -> annotated jpeg bytes
@@ -123,23 +143,37 @@ def grab_frame(hls_url):
 
 # --- Detection -------------------------------------------------------------
 
+def vehicle_boxes(result, confidence):
+    """Vehicle boxes clearing the confidence floor for their own class."""
+    for box in result.boxes:
+        cls = int(box.cls[0])
+        if cls not in VEHICLES:
+            continue
+        floor = MOTORCYCLE_CONF if cls == MOTORCYCLE else confidence
+        if float(box.conf[0]) >= floor:
+            yield cls, box
+
+
+def predict(model, frame, confidence, imgsz):
+    """One pass, floored low enough that the per-class floors can still apply."""
+    return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
+                         augment=AUGMENT, verbose=False)[0]
+
+
 def detect(model, frame, confidence, imgsz=1280):
     # These are traffic cameras looking down a street, so the vehicles are small.
     # Inferring at 1280 rather than the default 640 roughly doubles what is found.
     # Going past 1280 makes it worse: the cameras send 600x480 to 1280x720, so a
     # larger size is only upscaling. Measured over four frames, 1920 found 14
     # vehicles where 1280 found 21.
-    result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
+    result = predict(model, frame, confidence, imgsz)
 
     counts = {}
     boxes = []
     total = 0
     height, width = frame.shape[:2]
 
-    for box in result.boxes:
-        cls = int(box.cls[0])
-        if cls not in VEHICLES:
-            continue
+    for cls, box in vehicle_boxes(result, confidence):
         name = VEHICLES[cls][0]
         counts[name] = counts.get(name, 0) + 1
         total += 1
@@ -366,12 +400,9 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
     tracker = FlowTracker()
 
     def run_yolo(frame):
-        result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
+        result = predict(model, frame, confidence, imgsz)
         out = []
-        for box in result.boxes:
-            cls = int(box.cls[0])
-            if cls not in VEHICLES:
-                continue
+        for cls, box in vehicle_boxes(result, confidence):
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
             out.append({"bbox": [x1, y1, x2, y2], "name": VEHICLES[cls][0],
                         "conf": float(box.conf[0])})
