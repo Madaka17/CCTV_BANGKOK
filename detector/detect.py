@@ -18,7 +18,6 @@ The web server proxies these at /api/detections and /api/detect-frame/<id>.
 import argparse
 
 import json
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -26,7 +25,6 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
-import numpy as np
 from ultralytics import YOLO
 
 # COCO classes that are vehicles, and what to call them in Thai
@@ -85,33 +83,47 @@ def ensure_cameras(site):
 
 
 # --- Frame capture ---------------------------------------------------------
+#
+# OpenCV is built with FFmpeg, so it opens these HLS URLs itself. Calling an
+# ffmpeg binary meant the detector found nothing at all on a machine that did
+# not have one, and cost seconds per camera starting the process where opening
+# the stream here takes under half a second.
 
-def grab_frame(hls_url, timeout=25):
-    """One frame from a live stream, as encoded JPEG bytes."""
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-rw_timeout", "15000000",
-            "-i", hls_url,
-            "-frames:v", "1", "-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
-        ],
-        capture_output=True,
-        timeout=timeout,
-    )
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError((proc.stderr.decode()[:150] or "no frame").strip())
-    return proc.stdout
+STREAM_TIMEOUT_MS = 15000
+
+
+def open_stream(url):
+    """A capture on a live stream, or None if it will not open.
+
+    The timeouts only take effect if they are set before opening, so this
+    cannot use the VideoCapture(url) constructor.
+    """
+    cap = cv2.VideoCapture()
+    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, STREAM_TIMEOUT_MS)
+    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, STREAM_TIMEOUT_MS)
+    if not cap.open(url, cv2.CAP_FFMPEG):
+        cap.release()
+        return None
+    return cap
+
+
+def grab_frame(hls_url):
+    """One frame from a live stream."""
+    cap = open_stream(hls_url)
+    if cap is None:
+        raise RuntimeError("could not open stream")
+    try:
+        ok, frame = cap.read()
+    finally:
+        cap.release()
+    if not ok or frame is None:
+        raise RuntimeError("no frame")
+    return frame
 
 
 # --- Detection -------------------------------------------------------------
 
-def detect(model, jpeg_bytes, confidence, imgsz=1280):
-    import numpy as np
-
-    frame = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype="uint8"), cv2.IMREAD_COLOR)
-    if frame is None:
-        raise RuntimeError("could not decode frame")
-
+def detect(model, frame, confidence, imgsz=1280):
     # These are traffic cameras looking down a street, so the vehicles are small.
     # Inferring at 1280 rather than the default 640 roughly doubles what is found.
     # Going past 1280 makes it worse: the cameras send 600x480 to 1280x720, so a
@@ -159,12 +171,9 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
 
 # --- Focus: one camera, continuously ---------------------------------------
 #
-# Opening ffmpeg per frame costs about five seconds, nearly all of it
-# reconnecting. For the camera being watched, one ffmpeg is left running and
-# frames are read off its stdout as they arrive.
-
-JPEG_SOI = b"\xff\xd8"
-JPEG_EOI = b"\xff\xd9"
+# Reopening the stream for every frame would spend most of the time connecting.
+# For the camera being watched, one capture is left open and frames are read off
+# it as they arrive.
 
 
 class FlowTracker:
@@ -375,18 +384,21 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
             continue
 
         tracker.reset()
-        proc = subprocess.Popen(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-rw_timeout", "15000000", "-i", cam["hls"],
-                "-vf", f"fps={fps}", "-q:v", "5",
-                "-f", "image2pipe", "-vcodec", "mjpeg", "-",
-            ],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
+        cap = open_stream(cam["hls"])
+        if cap is None:
+            with lock:
+                state["claimed"].pop(cam["id"], None)
+            time.sleep(1)
+            continue
+
+        # ffmpeg was thinning the stream for us with -vf fps=N. Every frame
+        # arrives here instead, so decode one in every skip + 1 and let grab()
+        # discard the rest: that holds the read at the live edge without paying
+        # to decode frames nothing looks at.
+        native = cap.get(cv2.CAP_PROP_FPS)
+        skip = max(0, round((native if native > 0 else 25) / fps) - 1)
         print(f"focus -> {cam['id']} ({cam['title'][:40]})", flush=True)
 
-        buf = b""
         frames = 0
         started = time.time()
         try:
@@ -396,33 +408,12 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
                 if not still_wanted:
                     break
 
-                chunk = proc.stdout.read(65536)
-                if not chunk:
+                for _ in range(skip):
+                    if not cap.grab():
+                        break
+                ok, frame = cap.read()
+                if not ok or frame is None:
                     break
-                buf += chunk
-
-                # Optical flow needs consecutive frames, so take them in order.
-                # If more than a couple have piled up we are behind: skip to the
-                # newest and start the flow again from there.
-                starts = [i for i in _jpeg_starts(buf)]
-                end_i = buf.rfind(JPEG_EOI)
-                if end_i == -1 or not starts:
-                    continue
-
-                pending = [i for i in starts if i < end_i]
-                if len(pending) > 2:
-                    tracker.reset()
-                    take = pending[-1]
-                else:
-                    take = pending[0]
-
-                nxt = next((i for i in starts if i > take), None)
-                jpeg = buf[take:nxt] if nxt is not None else buf[take:end_i + 2]
-                buf = buf[(nxt if nxt is not None else end_i + 2):]
-
-                frame = cv2.imdecode(np.frombuffer(jpeg, dtype="uint8"), cv2.IMREAD_COLOR)
-                if frame is None:
-                    continue
 
                 try:
                     tracks, redetected = tracker.update(frame, run_yolo)
@@ -442,19 +433,11 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
                         state["frames"][cam["id"]] = encoded.tobytes()
                     state["focus_fps"][cam["id"]] = round(frames / max(1e-6, time.time() - started), 2)
         finally:
-            proc.kill()
-            proc.wait(timeout=5)
+            cap.release()
             with lock:
                 state["claimed"].pop(cam["id"], None)
                 state["focus_fps"].pop(cam["id"], None)
             print(f"focus released {cam['id']} after {frames} frames", flush=True)
-
-
-def _jpeg_starts(buf):
-    i = buf.find(JPEG_SOI)
-    while i != -1:
-        yield i
-        i = buf.find(JPEG_SOI, i + 2)
 
 
 # --- Sweep loop ------------------------------------------------------------
