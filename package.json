@@ -8,7 +8,17 @@
     "dev": "node --watch server.js",
     "py": "python3 server.py"
   },
-  "keywords": ["cctv", "bma", "bangkok", "traffic", "mjpeg", "dashboard"],
+  "keywords": [
+    "cctv",
+    "bma",
+    "bangkok",
+    "traffic",
+    "mjpeg",
+    "dashboard"
+  ],
   "author": "Antigravity",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.x"
+  }
 }

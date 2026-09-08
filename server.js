@@ -11,6 +11,26 @@ const url = require('node:url');
 const crypto = require('node:crypto');
 
 const PORT = process.env.PORT || 3000;
+
+// --- Serverless (Vercel) compatibility -------------------------------------
+// On Vercel this file is loaded as a serverless function: there is no long-lived
+// process, the filesystem is read-only (except /tmp), and a response cannot stay
+// open forever. These flags let the same file run both locally and on Vercel.
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const WRITABLE_TILE_DIR = IS_SERVERLESS ? '/tmp/bma-tiles' : null;
+
+// The Vercel bundler may place this file in a subdirectory, so locate the folder
+// that actually contains data/ and public/ instead of trusting __dirname.
+const ROOT_DIR = (function findRoot() {
+  const candidates = [__dirname, path.join(__dirname, '..'), process.cwd(), '/var/task'];
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(path.join(dir, 'data', 'cameras.json'))) return dir;
+    } catch (e) { /* try next candidate */ }
+  }
+  return __dirname;
+})();
+// ---------------------------------------------------------------------------
 const BMA_BASE = 'https://cpudapp.bangkok.go.th/bmatraffic';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -23,9 +43,9 @@ const httpsAgent = new https.Agent({
 });
 
 // Load data files
-const camerasPath = path.join(__dirname, 'data', 'cameras.json');
-const districtsPath = path.join(__dirname, 'data', 'districts.json');
-const trafficPath = path.join(__dirname, 'data', 'traffic_analysis.json');
+const camerasPath = path.join(ROOT_DIR, 'data', 'cameras.json');
+const districtsPath = path.join(ROOT_DIR, 'data', 'districts.json');
+const trafficPath = path.join(ROOT_DIR, 'data', 'traffic_analysis.json');
 
 let cameras = [];
 let districts = [];
@@ -139,7 +159,8 @@ function rollTrafficHistory5m() {
 }
 
 // Slide 5-minute rolling window every 60 seconds
-setInterval(rollTrafficHistory5m, 60000);
+const rollTimer = setInterval(rollTrafficHistory5m, 60000);
+if (typeof rollTimer.unref === 'function') rollTimer.unref();
 
 // Concurrency Queue to prevent overwhelming BMA servers
 class ConcurrencyQueue {
@@ -433,6 +454,7 @@ class BmaSessionManager {
     };
 
     poller.timer = setInterval(poll, 1100);
+    if (typeof poller.timer.unref === 'function') poller.timer.unref();
     this.activePollers.set(cameraId, poller);
     poll();
   }
@@ -527,7 +549,7 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
 
@@ -612,6 +634,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Runtime capabilities, so the client knows whether MJPEG streaming is available
+  if (pathname === '/api/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ serverless: IS_SERVERLESS, mjpeg: !IS_SERVERLESS }));
+    return;
+  }
+
   if (pathname === '/api/districts') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ total: districts.length, districts: districts }));
@@ -642,6 +671,24 @@ const server = http.createServer(async (req, res) => {
     if (!cam) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Camera ID not found');
+      return;
+    }
+
+    // A serverless invocation cannot keep a multipart response open, so fall back
+    // to a single fresh JPEG. The <img> still renders; the client refreshes it.
+    if (IS_SERVERLESS) {
+      const frame = await bmaSession.fetchCameraFrame(cameraId);
+      if (!frame) {
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('Camera feed unavailable');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': frame.length,
+        'Cache-Control': 'no-store'
+      });
+      res.end(frame);
       return;
     }
 
@@ -749,7 +796,21 @@ const server = http.createServer(async (req, res) => {
       const x = parts[1];
       const y = parts[2].replace('.png', '').split('?')[0];
 
-      const tileFilePath = path.join(__dirname, 'data', 'tiles', z, x, `${y}.png`);
+      const bundledTilePath = path.join(ROOT_DIR, 'data', 'tiles', z, x, `${y}.png`);
+      // Only /tmp is writable on serverless, so newly fetched tiles are cached there.
+      const tileFilePath = WRITABLE_TILE_DIR
+        ? path.join(WRITABLE_TILE_DIR, z, x, `${y}.png`)
+        : bundledTilePath;
+
+      // Tiles shipped with the repo are read-only but still serveable.
+      if (WRITABLE_TILE_DIR && fs.existsSync(bundledTilePath)) {
+        res.writeHead(200, {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'public, max-age=31536000, immutable'
+        });
+        fs.createReadStream(bundledTilePath).pipe(res);
+        return;
+      }
 
       if (fs.existsSync(tileFilePath)) {
         try {
@@ -783,9 +844,12 @@ const server = http.createServer(async (req, res) => {
             const buffer = Buffer.from(await tileRes.arrayBuffer());
             if (buffer.length < 8000) continue; // Skip blocked placeholder
 
-            const dir = path.dirname(tileFilePath);
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(tileFilePath, buffer);
+            try {
+              fs.mkdirSync(path.dirname(tileFilePath), { recursive: true });
+              fs.writeFileSync(tileFilePath, buffer);
+            } catch (writeErr) {
+              // Read-only filesystem: serve the tile without caching it.
+            }
 
             const cType = tileUrl.includes('arcgisonline') ? 'image/jpeg' : 'image/png';
             res.writeHead(200, {
@@ -806,9 +870,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Static File Serving
-  let filePath = path.join(__dirname, 'public', pathname === '/' ? 'index.html' : pathname);
+  let filePath = path.join(ROOT_DIR, 'public', pathname === '/' ? 'index.html' : pathname);
 
-  if (!filePath.startsWith(path.join(__dirname, 'public'))) {
+  if (!filePath.startsWith(path.join(ROOT_DIR, 'public'))) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
@@ -816,7 +880,7 @@ const server = http.createServer(async (req, res) => {
 
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {
-      const indexPath = path.join(__dirname, 'public', 'index.html');
+      const indexPath = path.join(ROOT_DIR, 'public', 'index.html');
       fs.readFile(indexPath, (readErr, content) => {
         if (readErr) {
           res.writeHead(404);
@@ -835,14 +899,38 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentType });
     fs.createReadStream(filePath).pipe(res);
   });
-});
+};
 
-server.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`🚀 BMA Traffic CCTV Dashboard is running!`);
-  console.log(`👉 Web Interface:       http://localhost:${PORT}`);
-  console.log(`📊 Traffic Analysis:    http://localhost:${PORT}/api/traffic-analysis`);
-  console.log(`📡 MJPEG Stream URL:    http://localhost:${PORT}/api/stream/:id`);
-  console.log(`📷 Snapshot URL:        http://localhost:${PORT}/api/snapshot/:id`);
-  console.log(`=======================================================`);
-});
+// Never let a thrown error take the whole function down with a bare
+// FUNCTION_INVOCATION_FAILED - answer with a readable 500 instead.
+const safeHandler = async (req, res) => {
+  try {
+    await requestHandler(req, res);
+  } catch (err) {
+    console.error('Unhandled request error:', err);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Internal Server Error', message: String(err && err.message || err) }));
+    } else {
+      res.end();
+    }
+  }
+};
+
+// Vercel imports this handler (see api/index.js); it must not open a port.
+module.exports = safeHandler;
+module.exports.default = safeHandler;
+
+if (!IS_SERVERLESS) {
+  const server = http.createServer(safeHandler);
+
+  server.listen(PORT, () => {
+    console.log(`=======================================================`);
+    console.log(`🚀 BMA Traffic CCTV Dashboard is running!`);
+    console.log(`👉 Web Interface:       http://localhost:${PORT}`);
+    console.log(`📊 Traffic Analysis:    http://localhost:${PORT}/api/traffic-analysis`);
+    console.log(`📡 MJPEG Stream URL:    http://localhost:${PORT}/api/stream/:id`);
+    console.log(`📷 Snapshot URL:        http://localhost:${PORT}/api/snapshot/:id`);
+    console.log(`=======================================================`);
+  });
+}

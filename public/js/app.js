@@ -24,6 +24,11 @@ const state = {
   visibleCameras: new Set(),
   activeModalCam: null,
 
+  // Server capabilities (/api/config). MJPEG is unavailable on serverless hosts
+  // such as Vercel, where the wall falls back to periodic snapshot refreshes.
+  mjpegSupported: true,
+  wallLoopTimer: null,
+
   // 100% Offline Map State
   map: null,
   markersMap: new Map(),
@@ -136,7 +141,11 @@ const elements = {
   modalCoords: getEl('modal-coords'),
   modalDirection: getEl('modal-direction'),
   toast: getEl('toast'),
-  toastText: getEl('toast-text')
+  toastText: getEl('toast-text'),
+  btnRefreshDashboard: getEl('btn-refresh-dashboard'),
+  refreshIcon: getEl('refresh-icon'),
+  headerClockText: getEl('header-clock-text'),
+  btnScrollTop: getEl('btn-scroll-top')
 };
 
 // Toast notification helper
@@ -179,7 +188,12 @@ async function initApp() {
     applyFilters();
     initEventListeners();
     updateWallBadge();
+    await loadServerConfig();
     startLiveStreamingEngine();
+    startWallRefreshEngine();
+    startLiveClock();
+    initScrollToTop();
+    initKeyboardShortcuts();
 
     // Digital clock in modal
     setInterval(() => {
@@ -356,6 +370,18 @@ function updateLiveCountBadge() {
   }
 }
 
+// Ask the server what it can do (MJPEG streaming is not available on Vercel)
+async function loadServerConfig() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) return;
+    const cfg = await res.json();
+    state.mjpegSupported = cfg.mjpeg !== false;
+  } catch (e) {
+    // Older server without /api/config: assume MJPEG works
+  }
+}
+
 // Live Streaming Engine for Grid Cards
 function startLiveStreamingEngine() {
   if (state.liveLoopTimer) clearInterval(state.liveLoopTimer);
@@ -370,6 +396,29 @@ function startLiveStreamingEngine() {
           refreshCameraFrame(cid);
         }
       }, (index * 45) % state.liveIntervalMs);
+    });
+  }, state.liveIntervalMs);
+}
+
+// Multi-View wall: MJPEG keeps itself up to date, but on a serverless host
+// /api/stream returns a single frame, so refresh the wall images ourselves.
+function startWallRefreshEngine() {
+  if (state.wallLoopTimer) clearInterval(state.wallLoopTimer);
+  if (state.mjpegSupported) return;
+
+  state.wallLoopTimer = setInterval(() => {
+    if (!state.liveAll || state.currentView !== 'wall') return;
+
+    state.wallCameras.forEach((cid, index) => {
+      setTimeout(() => {
+        const img = document.getElementById('wall-img-' + cid);
+        if (!img) return;
+        const next = new Image();
+        next.onload = () => {
+          if (next.naturalWidth > 100) img.src = next.src;
+        };
+        next.src = '/api/snapshot/' + cid + '?t=' + Date.now();
+      }, index * 120);
     });
   }, state.liveIntervalMs);
 }
@@ -403,16 +452,18 @@ function refreshCameraFrame(cid) {
 function renderMiniSparkline(history, currentDensity) {
   if (!history || !history.length) {
     const d = currentDensity || 30;
-    const color = d >= 70 ? 'bg-rose-500' : (d >= 40 ? 'bg-amber-400' : 'bg-emerald-400');
-    return `<div class="flex-1 ${color} rounded-sm opacity-80" style="height: ${Math.max(20, d)}%" title="ปัจจุบัน: ${d}%"></div>`;
+    const color = d >= 70 ? 'bg-gradient-to-t from-rose-600 to-rose-400' : (d >= 40 ? 'bg-gradient-to-t from-amber-500 to-amber-300' : 'bg-gradient-to-t from-emerald-500 to-emerald-300');
+    return `<div class="flex-1 ${color} rounded-md shadow-sm" style="height: ${Math.max(22, d)}%" title="ปัจจุบัน: ${d}%"></div>`;
   }
 
   return history.map(item => {
     const val = item.density;
-    const color = val >= 70 ? 'bg-rose-500' : (val >= 40 ? 'bg-amber-400' : 'bg-emerald-400');
-    const heightPct = Math.max(18, Math.min(100, val));
+    const color = val >= 70 
+      ? 'bg-gradient-to-t from-rose-600 to-rose-400 shadow-rose-500/20' 
+      : (val >= 40 ? 'bg-gradient-to-t from-amber-500 to-amber-300 shadow-amber-500/20' : 'bg-gradient-to-t from-emerald-500 to-emerald-300 shadow-emerald-500/20');
+    const heightPct = Math.max(20, Math.min(100, val));
     const tip = `${item.label} (${item.time}): ${val}%`;
-    return `<div class="flex-1 ${color} rounded-sm opacity-85 hover:opacity-100 transition-all cursor-pointer" style="height: ${heightPct}%" title="${tip}"></div>`;
+    return `<div class="flex-1 ${color} rounded-md shadow-sm opacity-90 hover:opacity-100 transition-all cursor-pointer" style="height: ${heightPct}%" title="${tip}"></div>`;
   }).join('');
 }
 
@@ -425,23 +476,23 @@ function getTrafficBadgeHtml(traffic) {
 
   if (status === 'congested') {
     return `
-      <span class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center space-x-1 backdrop-blur-sm shadow-sm" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
-        <span class="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>
-        <span>🔴 ติดขัด (${density}% ${trend})</span>
+      <span class="px-2.5 py-1 text-[10px] font-bold rounded-xl bg-rose-500/25 text-rose-300 border border-rose-500/50 flex items-center space-x-1.5 backdrop-blur-md shadow-lg shadow-rose-500/10" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
+        <span class="w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+        <span>ติดขัด (${density}% ${trend})</span>
       </span>
     `;
   } else if (status === 'moderate') {
     return `
-      <span class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1 backdrop-blur-sm shadow-sm" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-        <span>🟡 ชะลอตัว (${density}% ${trend})</span>
+      <span class="px-2.5 py-1 text-[10px] font-bold rounded-xl bg-amber-500/25 text-amber-300 border border-amber-500/50 flex items-center space-x-1.5 backdrop-blur-md shadow-lg shadow-amber-500/10" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
+        <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+        <span>ชะลอตัว (${density}% ${trend})</span>
       </span>
     `;
   }
   return `
-    <span class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center space-x-1 backdrop-blur-sm shadow-sm" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
-      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-      <span>🟢 คล่องตัว (${density}% ${trend})</span>
+    <span class="px-2.5 py-1 text-[10px] font-bold rounded-xl bg-emerald-500/25 text-emerald-300 border border-emerald-500/50 flex items-center space-x-1.5 backdrop-blur-md shadow-lg shadow-emerald-500/10" title="เฉลี่ย 5 นาที: ${density}% ${traffic.trend_th || ''}">
+      <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+      <span>คล่องตัว (${density}% ${trend})</span>
     </span>
   `;
 }
@@ -459,10 +510,15 @@ function renderGrid() {
   if (pageItems.length === 0) {
     if (elements.camerasGrid) {
       elements.camerasGrid.innerHTML = `
-        <div class="col-span-full py-16 text-center text-slate-400 space-y-3">
-          <svg class="w-12 h-12 mx-auto text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-          <p class="text-sm">ไม่พบกล้องวงจรปิดที่ตรงกับเงื่อนไขการค้นหาหรือตัวกรองจราจร</p>
-          <button onclick="resetSearch()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 cursor-pointer">ล้างตัวกรองทั้งหมด</button>
+        <div class="col-span-full py-20 text-center text-slate-400 space-y-4 bg-slate-900/60 rounded-3xl border border-slate-800 p-8 shadow-xl">
+          <div class="w-16 h-16 mx-auto rounded-2xl bg-slate-800 flex items-center justify-center text-slate-500">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          </div>
+          <div class="space-y-1">
+            <p class="text-base font-bold text-white">ไม่พบกล้องวงจรปิดที่ตรงกับเงื่อนไข</p>
+            <p class="text-xs text-slate-400">ลองเปลี่ยนคำค้นหา หรือเลือกเขตและตัวกรองสภาพจราจรใหม่อีกครั้ง</p>
+          </div>
+          <button onclick="resetSearch()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-600/30 transition-all cursor-pointer">ล้างตัวกรองทั้งหมด</button>
         </div>
       `;
     }
@@ -473,10 +529,9 @@ function renderGrid() {
     elements.camerasGrid.innerHTML = pageItems.map(cam => {
       const initialUrl = '/api/snapshot/' + cam.id + '?t=' + Date.now();
       const traffic = cam.traffic || { status: 'flowing', status_th: 'คล่องตัว', density: 30, speed_est: '50 กม./ชม.' };
-      const densityColor = traffic.status === 'congested' ? 'bg-rose-500' : traffic.status === 'moderate' ? 'bg-amber-400' : 'bg-emerald-500';
 
       return `
-        <div class="camera-card bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg flex flex-col group relative" data-cam-id="${cam.id}">
+        <div class="camera-card bg-slate-900/90 border border-slate-800/80 rounded-2xl overflow-hidden shadow-lg flex flex-col group relative hover:border-slate-700 transition-all" data-cam-id="${cam.id}">
           
           <!-- Video / Image Preview Area -->
           <div class="relative bg-slate-950 aspect-video overflow-hidden flex items-center justify-center cursor-pointer" onclick="openModal('${cam.id}')">
@@ -485,34 +540,42 @@ function renderGrid() {
               src="${initialUrl}" 
               alt="${cam.name}" 
               loading="lazy" 
-              class="w-full h-full object-cover smooth-stream-img transition-all duration-200 group-hover:scale-105"
+              class="w-full h-full object-cover smooth-stream-img transition-all duration-300 group-hover:scale-105"
               onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'400\' height=\'266\' viewBox=\'0 0 400 266\' fill=\'%230f172a\'><text x=\'50%25\' y=\'50%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%2364748b\' font-size=\'14\' font-family=\'sans-serif\'>กำลังโหลดภาพสด...</text></svg>'"
             />
 
             <!-- Top Left: Live Badge & ID -->
-            <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5">
-              <span id="badge-live-${cam.id}" class="px-2 py-0.5 text-[10px] font-bold rounded-md border backdrop-blur-md bg-rose-600/90 text-white border-rose-400 flex items-center space-x-1">
+            <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5 z-10">
+              <span id="badge-live-${cam.id}" class="px-2 py-0.5 text-[10px] font-bold rounded-lg border backdrop-blur-md bg-rose-600/95 text-white border-rose-400 flex items-center space-x-1 shadow-md">
                 <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
                 <span>LIVE</span>
               </span>
-              <span class="px-1.5 py-0.5 text-[10px] font-mono bg-slate-900/80 text-slate-300 rounded border border-slate-700">#${cam.id}</span>
+              <span class="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-slate-900/85 backdrop-blur-md text-slate-300 rounded-lg border border-slate-700/80 shadow-md">#${cam.id}</span>
             </div>
 
             <!-- Top Right: Traffic Status Pill -->
-            <div class="absolute top-2.5 right-2.5">
+            <div class="absolute top-2.5 right-2.5 z-10">
               ${getTrafficBadgeHtml(traffic)}
             </div>
 
+            <!-- Bottom Gradient Speed Overlay -->
+            <div class="absolute bottom-0 inset-x-0 h-9 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent pointer-events-none flex items-end px-3 py-1.5 justify-between">
+              <span class="text-[10px] font-mono text-slate-300 font-semibold flex items-center space-x-1">
+                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span>${traffic.speed_est || '45 กม./ชม.'}</span>
+              </span>
+            </div>
+
             <!-- Quick Action Hover Overlay -->
-            <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-2">
+            <div class="absolute inset-0 bg-black/45 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-2 z-20">
               <button 
                 type="button" 
                 onclick="event.stopPropagation(); openModal('${cam.id}')" 
-                class="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg transition-transform hover:scale-105 flex items-center space-x-1.5 cursor-pointer" 
+                class="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-xl shadow-rose-600/40 transition-transform hover:scale-105 active:scale-95 flex items-center space-x-1.5 cursor-pointer" 
                 title="ขยายดูภาพสดความลื่น 60 FPS"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                <span>ขยายดูสด (60 FPS)</span>
+                <span>เปิดดูสด (60 FPS)</span>
               </button>
             </div>
           </div>
@@ -521,29 +584,29 @@ function renderGrid() {
           <div class="p-4 flex-1 flex flex-col justify-between space-y-3">
             <div>
               <div class="flex items-start justify-between gap-2">
-                <h4 class="text-sm font-bold text-white leading-snug line-clamp-2 hover:text-rose-400 cursor-pointer" onclick="openModal('${cam.id}')">${cam.name}</h4>
+                <h4 class="text-sm font-bold text-white leading-snug line-clamp-2 hover:text-rose-400 transition-colors cursor-pointer" onclick="openModal('${cam.id}')" title="${cam.name}">${cam.name}</h4>
               </div>
-              ${cam.desc ? `<p class="text-xs text-slate-400 mt-1 line-clamp-1 flex items-center space-x-1"><svg class="w-3 h-3 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg><span>${cam.desc}</span></p>` : ''}
+              ${cam.desc ? `<p class="text-xs text-slate-400 mt-1 line-clamp-1 flex items-center space-x-1.5"><svg class="w-3 h-3 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg><span>${cam.desc}</span></p>` : ''}
             </div>
 
             <!-- 5-Minute Traffic Density & Mini Sparkline Indicator -->
-            <div class="space-y-1.5 pt-1 bg-slate-950/40 p-2 rounded-xl border border-slate-800/60">
+            <div class="space-y-1.5 pt-1.5 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
               <div class="flex items-center justify-between text-[11px] text-slate-400">
                 <span class="flex items-center space-x-1">
                   <span class="text-slate-400 text-[10px]">ย้อนหลัง 5 นาที:</span>
                   <span class="font-bold text-slate-200">${traffic.density_5m_avg ?? traffic.density}%</span>
-                  <span class="text-[10px] font-semibold text-slate-300 ml-0.5">${traffic.trend_5m === 'increasing' ? '↗' : (traffic.trend_5m === 'decreasing' ? '↘' : '→')}</span>
+                  <span class="text-[10px] font-bold text-slate-300 ml-0.5">${traffic.trend_5m === 'increasing' ? '↗' : (traffic.trend_5m === 'decreasing' ? '↘' : '→')}</span>
                 </span>
-                <span class="font-mono text-slate-300 text-[10px]">${traffic.speed_est}</span>
+                <span class="font-mono text-slate-300 text-[10px] font-semibold">${traffic.speed_est}</span>
               </div>
-              <div class="w-full h-3 rounded bg-slate-900/80 p-0.5 flex items-end gap-1 overflow-hidden" title="ไทม์ไลน์ความหนาแน่น 5 นาทีย้อนหลัง (-5m ถึง ตอนนี้)">
+              <div class="w-full h-3 rounded-lg bg-slate-900/90 p-0.5 flex items-end gap-1 overflow-hidden" title="ไทม์ไลน์ความหนาแน่น 5 นาทีย้อนหลัง (-5m ถึง ปัจจุบัน)">
                 ${renderMiniSparkline(traffic.history_5m, traffic.density)}
               </div>
             </div>
 
             <!-- Bottom Meta & Actions -->
-            <div class="pt-2 border-t border-slate-800 flex items-center justify-between">
-              <span class="px-2 py-0.5 text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700/60 rounded-md">
+            <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+              <span class="px-2.5 py-1 text-[11px] font-semibold bg-slate-800/90 text-slate-300 border border-slate-700/60 rounded-xl">
                 เขต${cam.district_th}
               </span>
 
@@ -551,7 +614,7 @@ function renderGrid() {
                 <button 
                   type="button" 
                   onclick="locateOnMap('${cam.id}')" 
-                  class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors cursor-pointer" 
+                  class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer" 
                   title="ดูพิกัดบนแผนที่"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
@@ -559,7 +622,7 @@ function renderGrid() {
                 <button 
                   type="button" 
                   onclick="addToWall('${cam.id}')" 
-                  class="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors cursor-pointer" 
+                  class="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer" 
                   title="เพิ่มเข้า Multi-View Wall"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
@@ -567,7 +630,7 @@ function renderGrid() {
                 <button 
                   type="button" 
                   onclick="copyStreamUrl('${cam.id}')" 
-                  class="p-1.5 text-slate-400 hover:text-teal-400 hover:bg-slate-800 rounded transition-colors cursor-pointer" 
+                  class="p-1.5 text-slate-400 hover:text-teal-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer" 
                   title="คัดลอก URL สตรีม"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
@@ -646,9 +709,9 @@ function switchView(viewName) {
   tabs.forEach(t => {
     if (!t.btn) return;
     if (t.name === viewName) {
-      t.btn.className = 'view-tab active px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-sm cursor-pointer';
+      t.btn.className = 'view-tab active px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-md shadow-rose-600/30 cursor-pointer';
     } else {
-      t.btn.className = 'view-tab px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all flex items-center space-x-1.5 text-slate-300 hover:text-white hover:bg-slate-700/50 cursor-pointer';
+      t.btn.className = 'view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer';
     }
   });
 
@@ -956,7 +1019,7 @@ function renderWall() {
     return `
       <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col relative group">
         <div class="relative bg-black aspect-video flex items-center justify-center overflow-hidden">
-          <img src="/api/stream/${cid}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" />
+          <img id="wall-img-${cid}" src="/api/stream/${cid}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" />
           
           <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5">
             <span class="px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow flex items-center space-x-1">
@@ -1479,18 +1542,18 @@ function resetSearch() {
 
 function updateTrafficFilterPillsUI(activeFilter) {
   const pills = [
-    { el: elements.filterTrafficAll, filter: 'all' },
-    { el: elements.filterTrafficFlowing, filter: 'flowing' },
-    { el: elements.filterTrafficModerate, filter: 'moderate' },
-    { el: elements.filterTrafficCongested, filter: 'congested' }
+    { el: elements.filterTrafficAll, filter: 'all', cls: 'active-all' },
+    { el: elements.filterTrafficFlowing, filter: 'flowing', cls: 'active-flowing' },
+    { el: elements.filterTrafficModerate, filter: 'moderate', cls: 'active-moderate' },
+    { el: elements.filterTrafficCongested, filter: 'congested', cls: 'active-congested' }
   ];
 
   pills.forEach(p => {
     if (p.el) {
       if (p.filter === activeFilter) {
-        p.el.classList.add('active');
+        p.el.classList.add('active', p.cls);
       } else {
-        p.el.classList.remove('active');
+        p.el.classList.remove('active', p.cls);
       }
     }
   });
@@ -1743,7 +1806,103 @@ function initEventListeners() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeModal();
   });
+
+  // Refresh Dashboard Button
+  addSafe(elements.btnRefreshDashboard, 'click', refreshDashboard);
 }
+
+// Live Top Header Clock
+function startLiveClock() {
+  const updateClock = () => {
+    const el = document.getElementById('header-clock-text');
+    if (el) {
+      const now = new Date();
+      el.textContent = now.toLocaleTimeString('th-TH') + ' น.';
+    }
+  };
+  updateClock();
+  setInterval(updateClock, 1000);
+}
+
+// Floating Scroll To Top Button
+function initScrollToTop() {
+  const btn = document.getElementById('btn-scroll-top');
+  if (!btn) return;
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 280) {
+      btn.classList.remove('opacity-0', 'pointer-events-none');
+    } else {
+      btn.classList.add('opacity-0', 'pointer-events-none');
+    }
+  }, { passive: true });
+}
+
+// Global Keyboard Shortcuts
+function initKeyboardShortcuts() {
+  document.addEventListener('keydown', e => {
+    // Press '/' to quickly focus the search bar
+    if (e.key === '/' && 
+        document.activeElement !== elements.searchInput && 
+        document.activeElement?.tagName !== 'INPUT' && 
+        document.activeElement?.tagName !== 'TEXTAREA' && 
+        document.activeElement?.tagName !== 'SELECT') {
+      e.preventDefault();
+      if (elements.searchInput) {
+        elements.searchInput.focus();
+        elements.searchInput.select();
+      }
+      return;
+    }
+
+    // Escape closes modal or blurs search
+    if (e.key === 'Escape') {
+      if (state.activeModalCam) {
+        closeModal();
+      } else if (document.activeElement === elements.searchInput) {
+        elements.searchInput.blur();
+      }
+    }
+  });
+}
+
+// Refresh Dashboard Data on Demand
+async function refreshDashboard() {
+  const icon = document.getElementById('refresh-icon');
+  if (icon) icon.classList.add('animate-spin');
+
+  try {
+    const res = await fetch('/api/traffic-analysis');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.summary) {
+        state.trafficSummary = data.summary;
+        updateTrafficSummaryUI(data.summary);
+      }
+      if (data && data.cameras) {
+        state.cameras.forEach(cam => {
+          if (data.cameras[cam.id]) {
+            cam.traffic = data.cameras[cam.id];
+          }
+        });
+      }
+    }
+
+    // Refresh currently visible frames
+    state.visibleCameras.forEach(cid => {
+      refreshCameraFrame(cid);
+    });
+
+    renderGrid();
+    showToast('✨ อัปเดตข้อมูลจราจรสดล่าสุดเรียบร้อย');
+  } catch (err) {
+    showToast('⚠️ ไม่สามารถอัปเดตข้อมูลได้');
+  } finally {
+    setTimeout(() => {
+      if (icon) icon.classList.remove('animate-spin');
+    }, 600);
+  }
+}
+window.refreshDashboard = refreshDashboard;
 
 // Start Application on Load
 window.addEventListener('DOMContentLoaded', initApp);
