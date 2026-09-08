@@ -574,6 +574,27 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
+// Is the BMA site reachable from here? Its Cloudflare edge answers datacenter
+// IPs with a bot challenge, so a deployed host sees no frames at all while a
+// machine in Thailand sees them fine. Cached, since this only changes rarely.
+let upstreamProbe = { status: 'unknown', checkedAt: 0 };
+async function probeUpstream() {
+  if (Date.now() - upstreamProbe.checkedAt < 5 * 60 * 1000) return upstreamProbe.status;
+  try {
+    const r = await fetch(`${BMA_BASE}/index.aspx`, {
+      headers: BROWSER_HEADERS,
+      signal: AbortSignal.timeout(8000)
+    });
+    upstreamProbe = {
+      status: r.ok && r.headers.get('set-cookie') ? 'ok' : 'blocked',
+      checkedAt: Date.now()
+    };
+  } catch (err) {
+    upstreamProbe = { status: 'blocked', checkedAt: Date.now() };
+  }
+  return upstreamProbe.status;
+}
+
 const requestHandler = async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -703,8 +724,9 @@ const requestHandler = async (req, res) => {
 
   // Runtime capabilities, so the client knows whether MJPEG streaming is available
   if (pathname === '/api/config') {
+    const upstream = await probeUpstream();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ serverless: IS_SERVERLESS, mjpeg: !IS_SERVERLESS }));
+    res.end(JSON.stringify({ serverless: IS_SERVERLESS, mjpeg: !IS_SERVERLESS, upstream }));
     return;
   }
 

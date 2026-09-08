@@ -377,9 +377,28 @@ async function loadServerConfig() {
     if (!res.ok) return;
     const cfg = await res.json();
     state.mjpegSupported = cfg.mjpeg !== false;
+    if (cfg.upstream === 'blocked') showUpstreamBlockedBanner();
   } catch (e) {
     // Older server without /api/config: assume MJPEG works
   }
+}
+
+// The BMA site's Cloudflare edge answers datacenter IPs with a bot challenge,
+// so a deployed host gets no frames. Say so instead of showing broken images.
+function showUpstreamBlockedBanner() {
+  if (document.getElementById('upstream-blocked-banner')) return;
+
+  const banner = document.createElement('div');
+  banner.id = 'upstream-blocked-banner';
+  banner.className = 'sticky top-0 z-50 px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-center gap-2 text-center';
+  banner.innerHTML = `
+    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0l-7.1 12.25A2 2 0 004.99 19z"/></svg>
+    <span>ภาพสดจากกล้องใช้งานไม่ได้จากเซิร์ฟเวอร์นี้ - ระบบของ กทม. ปิดกั้นคำขอจากศูนย์ข้อมูล ข้อมูลกล้อง แผนที่ และสถิติจราจรยังใช้งานได้ตามปกติ</span>
+  `;
+  document.body.insertBefore(banner, document.body.firstChild);
+
+  // Stop the LIVE badges from claiming a stream that cannot arrive
+  document.querySelectorAll('[id^="badge-live-"]').forEach(el => el.classList.add('hidden'));
 }
 
 // Live Streaming Engine for Grid Cards
