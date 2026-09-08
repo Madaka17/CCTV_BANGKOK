@@ -21,6 +21,7 @@ import json
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -44,8 +45,14 @@ state = {
     "started": time.time(),
     "sweeps": 0,
     "error": None,
+    # The camera someone is watching, detected continuously rather than once a
+    # sweep. Held only while the page keeps saying it is still watching.
+    "focus": None,
+    "focus_until": 0,
+    "focus_fps": 0.0,
 }
 lock = threading.Lock()
+FOCUS_TTL = 20  # seconds without a heartbeat before focus is dropped
 
 
 # --- Camera list -----------------------------------------------------------
@@ -53,6 +60,27 @@ lock = threading.Lock()
 def load_cameras(site):
     with urllib.request.urlopen(f"{site}/api/video-cameras", timeout=30) as r:
         return json.load(r).get("cameras", [])
+
+
+def ensure_cameras(site):
+    """The list, fetching it if we do not have one yet.
+
+    The web server may not be up when the detector starts, and waiting a whole
+    sweep interval to notice leaves focus with nothing to work on.
+    """
+    with lock:
+        if state["cameras"]:
+            return state["cameras"]
+    try:
+        cameras = load_cameras(site)
+    except Exception as exc:
+        state["error"] = str(exc)[:200]
+        return []
+    if cameras:
+        with lock:
+            state["cameras"] = cameras
+            state["error"] = None
+    return cameras
 
 
 # --- Frame capture ---------------------------------------------------------
@@ -126,11 +154,94 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
     return counts, total, (buf.tobytes() if ok else None), boxes
 
 
+# --- Focus: one camera, continuously ---------------------------------------
+#
+# Opening ffmpeg per frame costs about five seconds, nearly all of it
+# reconnecting. For the camera being watched, one ffmpeg is left running and
+# frames are read off its stdout as they arrive.
+
+JPEG_SOI = b"\xff\xd8"
+JPEG_EOI = b"\xff\xd9"
+
+
+def focus_worker(model, confidence, imgsz, fps, site):
+    while True:
+        with lock:
+            cam_id = state["focus"] if time.time() < state["focus_until"] else None
+        cameras = ensure_cameras(site) if cam_id else []
+        cam = next((c for c in cameras if c["id"] == cam_id), None)
+        if not cam:
+            state["focus_fps"] = 0.0
+            time.sleep(0.5)
+            continue
+
+        proc = subprocess.Popen(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-rw_timeout", "15000000", "-i", cam["hls"],
+                "-vf", f"fps={fps}", "-q:v", "5",
+                "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        print(f"focus -> {cam['id']} ({cam['title'][:40]})", flush=True)
+
+        buf = b""
+        frames = 0
+        started = time.time()
+        try:
+            while True:
+                with lock:
+                    still_wanted = state["focus"] == cam["id"] and time.time() < state["focus_until"]
+                if not still_wanted:
+                    break
+
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+
+                # Keep only the newest complete frame: detection is slower than
+                # the stream, and showing the freshest is the whole point
+                end = buf.rfind(JPEG_EOI)
+                if end == -1:
+                    continue
+                start = buf.rfind(JPEG_SOI, 0, end)
+                if start == -1:
+                    continue
+                jpeg, buf = buf[start:end + 2], buf[end + 2:]
+
+                try:
+                    counts, total, annotated, boxes = detect(model, jpeg, confidence, imgsz)
+                except Exception:
+                    continue
+
+                frames += 1
+                with lock:
+                    state["detections"][cam["id"]] = {
+                        "id": cam["id"], "title": cam["title"], "total": total,
+                        "counts": counts, "boxes": boxes, "at": time.time(),
+                        "ms": 0, "error": None, "live": True,
+                    }
+                    if annotated:
+                        state["frames"][cam["id"]] = annotated
+                    state["focus_fps"] = round(frames / max(1e-6, time.time() - started), 2)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            state["focus_fps"] = 0.0
+            print(f"focus released {cam['id']} after {frames} frames", flush=True)
+
+
 # --- Sweep loop ------------------------------------------------------------
 
 def sweep(model, cameras, confidence, imgsz):
     for cam in cameras:
         cam_id = cam["id"]
+        # The focus worker is already on this one, at a far better rate
+        with lock:
+            if state["focus"] == cam_id and time.time() < state["focus_until"]:
+                continue
         started = time.time()
         try:
             counts, total, annotated, boxes = detect(model, grab_frame(cam["hls"]), confidence, imgsz)
@@ -162,20 +273,31 @@ def sweep(model, cameras, confidence, imgsz):
                 }
 
 
-def loop(site, interval, confidence, weights, imgsz):
+def loop(site, interval, confidence, weights, imgsz, model_box=None):
     print(f"Loading {weights} ...", flush=True)
     model = YOLO(weights)
     state["model"] = weights
+    if model_box is not None:
+        model_box["model"] = model
     print("Model ready", flush=True)
 
     while True:
         started = time.time()
         try:
-            cameras = load_cameras(site)
-            if cameras:
-                with lock:
-                    state["cameras"] = cameras
-                    state["error"] = None
+            try:
+                cameras = load_cameras(site)
+                if cameras:
+                    with lock:
+                        state["cameras"] = cameras
+                        state["error"] = None
+            except Exception as exc:
+                state["error"] = str(exc)[:200]
+
+            if not state["cameras"]:
+                print(f"no camera list yet ({state['error']}) - retrying in 5s", flush=True)
+                time.sleep(5)
+                continue
+
             sweep(model, state["cameras"], confidence, imgsz)
             state["sweeps"] += 1
 
@@ -192,7 +314,15 @@ def loop(site, interval, confidence, weights, imgsz):
             print("sweep failed:", exc, flush=True)
 
         # Pace by when the sweep started, so a slow one does not compound
-        time.sleep(max(1, interval - (time.time() - started)))
+        wait = max(1, interval - (time.time() - started))
+        # While a camera is being watched, leave the bandwidth to it
+        while wait > 0:
+            step = min(2, wait)
+            time.sleep(step)
+            wait -= step
+            with lock:
+                if time.time() < state["focus_until"]:
+                    wait = max(wait, 2)
 
 
 # --- HTTP ------------------------------------------------------------------
@@ -224,7 +354,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "no frame yet"})
             return
 
+        if self.path.startswith("/focus"):
+            query = urllib.parse.urlparse(self.path).query
+            cam_id = urllib.parse.parse_qs(query).get("id", [""])[0]
+            with lock:
+                if cam_id:
+                    if state["focus"] != cam_id:
+                        state["focus"] = cam_id
+                    state["focus_until"] = time.time() + FOCUS_TTL
+                else:
+                    state["focus"] = None
+                    state["focus_until"] = 0
+                current, fps = state["focus"], state["focus_fps"]
+            self._json(200, {"focus": current, "fps": fps, "ttl": FOCUS_TTL})
+            return
+
         if self.path.startswith("/detections"):
+            wanted = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id", [""])[0]
+            if wanted:
+                # Polling one camera a second should not carry the other eighteen
+                with lock:
+                    one = state["detections"].get(wanted)
+                    fps = state["focus_fps"] if state["focus"] == wanted else 0.0
+                self._json(200, {"detections": [one] if one else [], "fps": fps})
+                return
+
             with lock:
                 readings = sorted(
                     state["detections"].values(),
@@ -243,6 +397,8 @@ class Handler(BaseHTTPRequestHandler):
                 "sweeps": state["sweeps"],
                 "cameras": len(state["cameras"]),
                 "uptime": int(time.time() - state["started"]),
+                "focus": state["focus"] if time.time() < state["focus_until"] else None,
+                "focusFps": state["focus_fps"],
                 "error": state["error"],
             })
             return
@@ -258,13 +414,23 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--weights", default="yolov8s.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--focus-fps", type=float, default=2.0,
+                    help="frames a second to pull for the camera being watched")
     args = ap.parse_args()
 
-    threading.Thread(
-        target=loop,
-        args=(args.site, args.interval, args.conf, args.weights, args.imgsz),
-        daemon=True,
-    ).start()
+    model_box = {}
+
+    def run_loop():
+        loop(args.site, args.interval, args.conf, args.weights, args.imgsz, model_box)
+
+    threading.Thread(target=run_loop, daemon=True).start()
+
+    def run_focus():
+        while "model" not in model_box:
+            time.sleep(0.5)
+        focus_worker(model_box["model"], args.conf, args.imgsz, args.focus_fps, args.site)
+
+    threading.Thread(target=run_focus, daemon=True).start()
 
     print(f"Detector on http://127.0.0.1:{args.port}  (sweep every {args.interval}s)", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()

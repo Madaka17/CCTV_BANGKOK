@@ -22,6 +22,9 @@ const state = {
   detail: null,       // camera open in the detail view
   detailMode: 'det',  // 'det' | 'live'
   detailTimer: null,
+  focusId: null,      // camera the detector is working on continuously
+  focusTimer: null,
+  focusFps: 0,
   map: null,
   markers: []
 };
@@ -218,6 +221,7 @@ function playCamera(cam) {
   state.playing.push(cam.id);
   attachPlayer(cam);
   updatePlayingBadge();
+  refreshFocusTarget();
 }
 
 function stopCamera(id) {
@@ -236,6 +240,7 @@ function stopCamera(id) {
 
   state.playing = state.playing.filter(x => x !== id);
   updatePlayingBadge();
+  refreshFocusTarget();
 }
 
 function updatePlayingBadge() {
@@ -273,6 +278,7 @@ function stopAllPlayers() {
   }
   state.players.clear();
   state.playing.slice().forEach(stopCamera);
+  setFocus(null);
 }
 
 // --- Vehicle detection -----------------------------------------------------
@@ -409,6 +415,72 @@ function redrawAllBoxes() {
   }
 }
 
+// --- Realtime focus --------------------------------------------------------
+//
+// A sweep of all nineteen cameras takes minutes, so its boxes are always stale.
+// The detector will work on one camera continuously instead - about 2 fps - if
+// the page keeps telling it which one is being watched.
+
+function setFocus(id) {
+  if (state.focusId === id) return;
+  state.focusId = id;
+  state.focusFps = 0;
+
+  if (state.focusTimer) { clearInterval(state.focusTimer); state.focusTimer = null; }
+  if (!id) {
+    fetch('/api/detect-focus?id=').catch(() => {});
+    updateFocusBadge();
+    return;
+  }
+
+  const beat = () => fetch(`/api/detect-focus?id=${encodeURIComponent(id)}`).catch(() => {});
+  beat();
+
+  // Two jobs on one timer: keep the focus alive, and pull its newest boxes
+  state.focusTimer = setInterval(async () => {
+    if (state.focusId !== id) return;
+    beat();
+    try {
+      const res = await fetch(`/api/detections?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      const reading = (data.detections || [])[0];
+      if (reading) {
+        state.detections.set(id, reading);
+        state.focusFps = data.fps || 0;
+        redrawAllBoxes();
+        if (state.detail && state.detail.id === id) renderDetailCounts(state.detail, reading);
+        const line = el('c-' + cssId(id));
+        if (line && reading.total !== null) {
+          const parts = Object.entries(reading.counts).map(([k, n]) => `${LABELS[k] || k} ${n}`).join(' · ');
+          line.textContent = reading.total ? `${reading.total} คัน — ${parts}` : 'ไม่พบรถ';
+        }
+      }
+      updateFocusBadge();
+    } catch (err) { /* detector off */ }
+  }, 1000);
+
+  updateFocusBadge();
+}
+
+function updateFocusBadge() {
+  const b = el('focus-badge');
+  if (!b) return;
+  const on = state.focusId && state.focusFps > 0;
+  b.classList.toggle('hidden', !on);
+  if (on) b.textContent = `ตรวจจับสด ${state.focusFps.toFixed(1)} fps`;
+}
+
+// Whatever the viewer is actually looking at: the open camera, else the first
+// one playing in the grid.
+function refreshFocusTarget() {
+  if (state.detail) { setFocus(state.detail.id); return; }
+  if (state.view === 'cams' && !state.showBoxes && state.playing.length) {
+    setFocus(state.playing[state.playing.length - 1]);
+    return;
+  }
+  setFocus(null);
+}
+
 // --- Camera detail ---------------------------------------------------------
 //
 // Opens on the detector's annotated frame, since that is what the counts are
@@ -426,6 +498,7 @@ function openDetail(cam) {
   document.body.style.overflow = 'hidden';
 
   renderDetail();
+  refreshFocusTarget();
   if (state.detailTimer) clearInterval(state.detailTimer);
   state.detailTimer = setInterval(() => {
     if (state.detail && state.detailMode === 'det') renderDetail(true);
@@ -442,6 +515,7 @@ function closeDetail() {
   state.detail = null;
   el('detail').classList.add('hidden');
   document.body.style.overflow = '';
+  refreshFocusTarget();
   if (state.view === 'cams') watchVisibility();
 }
 

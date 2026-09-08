@@ -1007,11 +1007,21 @@ const requestHandler = async (req, res) => {
   // Vehicle detection, from detector/detect.py. It is optional: when the
   // detector is not running these answer "off" rather than failing, so the
   // page simply shows no counts.
-  if (pathname === '/api/detections' || pathname.startsWith('/api/detect-frame/')) {
+  if (pathname === '/api/detections'
+      || pathname === '/api/detect-focus'
+      || pathname.startsWith('/api/detect-frame/')) {
     const isFrame = pathname.startsWith('/api/detect-frame/');
-    const target = isFrame
-      ? `${DETECTOR_URL}/frame/${encodeURIComponent(pathname.slice('/api/detect-frame/'.length))}`
-      : `${DETECTOR_URL}/detections`;
+    let target;
+    if (isFrame) {
+      target = `${DETECTOR_URL}/frame/${encodeURIComponent(pathname.slice('/api/detect-frame/'.length))}`;
+    } else if (pathname === '/api/detect-focus') {
+      // Tells the detector which camera is being watched, so it can work on
+      // that one continuously instead of once a sweep
+      target = `${DETECTOR_URL}/focus?id=${encodeURIComponent(parsedUrl.query.id || '')}`;
+    } else {
+      const one = parsedUrl.query.id ? `?id=${encodeURIComponent(parsedUrl.query.id)}` : '';
+      target = `${DETECTOR_URL}/detections${one}`;
+    }
 
     try {
       const r = await fetch(target, { signal: AbortSignal.timeout(10000) });
