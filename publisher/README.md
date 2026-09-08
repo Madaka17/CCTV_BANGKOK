@@ -43,9 +43,13 @@ R2 ฟรี = **1,000,000 writes/เดือน** งานนี้เขี�
 **1. สร้าง R2 bucket**
 
 สมัคร/เข้า [dash.cloudflare.com](https://dash.cloudflare.com) (ฟรี ไม่ต้องมีโดเมน)
-→ เมนูซ้าย **R2 Object Storage** → **Create bucket** → ตั้งชื่อ `cctv-frames` → **Create**
+→ เมนูซ้ายหัวข้อ **Build** → **Storage & databases** → **R2 Object Storage**
+→ **Create bucket** → ตั้งชื่อ `cctv-frames` → **Create**
 
-> ครั้งแรก Cloudflare จะขอให้ผูกบัตรเพื่อยืนยันตัวตน แต่ไม่ตัดเงินถ้าอยู่ในโควตาฟรี
+> nav ของ Cloudflare ไม่มีเมนู "R2" ที่ระดับบนสุดแล้ว ต้องเข้าผ่าน Storage & databases
+> หรือกด `Cmd+K` แล้วพิมพ์ `R2`
+
+> ครั้งแรกต้องกด **Enable R2** และผูกบัตรเพื่อยืนยันตัวตน แต่ไม่ตัดเงินถ้าอยู่ในโควตาฟรี
 
 **2. เปิดให้อ่านแบบสาธารณะ**
 
