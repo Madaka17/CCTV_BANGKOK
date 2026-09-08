@@ -46,11 +46,11 @@ state = {
     "started": time.time(),
     "sweeps": 0,
     "error": None,
-    # The camera someone is watching, detected continuously rather than once a
-    # sweep. Held only while the page keeps saying it is still watching.
-    "focus": None,
-    "focus_until": 0,
-    "focus_fps": 0.0,
+    # Cameras someone is watching, detected continuously rather than once a
+    # sweep. Held only while a page keeps saying it is still watching.
+    "focus": {},        # camid -> expiry timestamp
+    "claimed": {},      # camid -> worker id, so two workers never take the same one
+    "focus_fps": {},    # camid -> frames a second
 }
 lock = threading.Lock()
 FOCUS_TTL = 20  # seconds without a heartbeat before focus is dropped
@@ -325,7 +325,33 @@ def tracks_to_reading(cam, tracks, width, height):
     }
 
 
-def focus_worker(model, confidence, imgsz, fps, site):
+def _claim_camera(worker_id, site):
+    """A focused camera no other worker has taken."""
+    now = time.time()
+    with lock:
+        for camid, until in list(state["focus"].items()):
+            if until < now:
+                state["focus"].pop(camid, None)
+                state["claimed"].pop(camid, None)
+                state["focus_fps"].pop(camid, None)
+
+        # Keep the one already held if it is still wanted
+        for camid, holder in state["claimed"].items():
+            if holder == worker_id and camid in state["focus"]:
+                wanted = camid
+                break
+        else:
+            wanted = next((c for c in state["focus"] if c not in state["claimed"]), None)
+            if wanted:
+                state["claimed"][wanted] = worker_id
+
+    if not wanted:
+        return None
+    cameras = ensure_cameras(site)
+    return next((c for c in cameras if c["id"] == wanted), None)
+
+
+def focus_worker(worker_id, model, confidence, imgsz, fps, site):
     tracker = FlowTracker()
 
     def run_yolo(frame):
@@ -341,12 +367,8 @@ def focus_worker(model, confidence, imgsz, fps, site):
         return out
 
     while True:
-        with lock:
-            cam_id = state["focus"] if time.time() < state["focus_until"] else None
-        cameras = ensure_cameras(site) if cam_id else []
-        cam = next((c for c in cameras if c["id"] == cam_id), None)
+        cam = _claim_camera(worker_id, site)
         if not cam:
-            state["focus_fps"] = 0.0
             time.sleep(0.5)
             continue
 
@@ -368,7 +390,7 @@ def focus_worker(model, confidence, imgsz, fps, site):
         try:
             while True:
                 with lock:
-                    still_wanted = state["focus"] == cam["id"] and time.time() < state["focus_until"]
+                    still_wanted = state["focus"].get(cam["id"], 0) > time.time()
                 if not still_wanted:
                     break
 
@@ -416,11 +438,13 @@ def focus_worker(model, confidence, imgsz, fps, site):
                     state["detections"][cam["id"]] = tracks_to_reading(cam, tracks, width, height)
                     if ok:
                         state["frames"][cam["id"]] = encoded.tobytes()
-                    state["focus_fps"] = round(frames / max(1e-6, time.time() - started), 2)
+                    state["focus_fps"][cam["id"]] = round(frames / max(1e-6, time.time() - started), 2)
         finally:
             proc.kill()
             proc.wait(timeout=5)
-            state["focus_fps"] = 0.0
+            with lock:
+                state["claimed"].pop(cam["id"], None)
+                state["focus_fps"].pop(cam["id"], None)
             print(f"focus released {cam['id']} after {frames} frames", flush=True)
 
 
@@ -438,7 +462,7 @@ def sweep(model, cameras, confidence, imgsz):
         cam_id = cam["id"]
         # The focus worker is already on this one, at a far better rate
         with lock:
-            if state["focus"] == cam_id and time.time() < state["focus_until"]:
+            if state["focus"].get(cam_id, 0) > time.time():
                 continue
         started = time.time()
         try:
@@ -519,7 +543,7 @@ def loop(site, interval, confidence, weights, imgsz, model_box=None):
             time.sleep(step)
             wait -= step
             with lock:
-                if time.time() < state["focus_until"]:
+                if state["focus"]:
                     wait = max(wait, 2)
 
 
@@ -557,14 +581,11 @@ class Handler(BaseHTTPRequestHandler):
             cam_id = urllib.parse.parse_qs(query).get("id", [""])[0]
             with lock:
                 if cam_id:
-                    if state["focus"] != cam_id:
-                        state["focus"] = cam_id
-                    state["focus_until"] = time.time() + FOCUS_TTL
-                else:
-                    state["focus"] = None
-                    state["focus_until"] = 0
-                current, fps = state["focus"], state["focus_fps"]
-            self._json(200, {"focus": current, "fps": fps, "ttl": FOCUS_TTL})
+                    state["focus"][cam_id] = time.time() + FOCUS_TTL
+                held = sorted(state["focus"])
+                fps = state["focus_fps"].get(cam_id, 0.0)
+            self._json(200, {"focus": cam_id or None, "held": held,
+                             "fps": fps, "ttl": FOCUS_TTL})
             return
 
         if self.path.startswith("/detections"):
@@ -573,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Polling one camera a second should not carry the other eighteen
                 with lock:
                     one = state["detections"].get(wanted)
-                    fps = state["focus_fps"] if state["focus"] == wanted else 0.0
+                    fps = state["focus_fps"].get(wanted, 0.0)
                 self._json(200, {"detections": [one] if one else [], "fps": fps})
                 return
 
@@ -595,8 +616,9 @@ class Handler(BaseHTTPRequestHandler):
                 "sweeps": state["sweeps"],
                 "cameras": len(state["cameras"]),
                 "uptime": int(time.time() - state["started"]),
-                "focus": state["focus"] if time.time() < state["focus_until"] else None,
-                "focusFps": state["focus_fps"],
+                "focus": sorted(state["focus"]),
+                "focusFps": dict(state["focus_fps"]),
+                "workers": state.get("focus_workers"),
                 "error": state["error"],
             })
             return
@@ -613,6 +635,9 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--weights", default="yolov8s.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--focus-workers", type=int, default=2,
+                    help="cameras that can be tracked at once; each is a stream and "
+                         "a share of the CPU, so keep it small")
     ap.add_argument("--focus-fps", type=float, default=2.0,
                     help="frames a second to pull for the camera being watched")
     args = ap.parse_args()
@@ -624,12 +649,16 @@ def main():
 
     threading.Thread(target=run_loop, daemon=True).start()
 
-    def run_focus():
+    state["focus_workers"] = args.focus_workers
+
+    def run_focus(worker_id):
         while "model" not in model_box:
             time.sleep(0.5)
-        focus_worker(model_box["model"], args.conf, args.imgsz, args.focus_fps, args.site)
+        focus_worker(worker_id, model_box["model"], args.conf, args.imgsz,
+                     args.focus_fps, args.site)
 
-    threading.Thread(target=run_focus, daemon=True).start()
+    for worker_id in range(args.focus_workers):
+        threading.Thread(target=run_focus, args=(worker_id,), daemon=True).start()
 
     print(f"Detector on http://127.0.0.1:{args.port}  (sweep every {args.interval}s)", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
