@@ -28,6 +28,9 @@ const state = {
   // such as Vercel, where the wall falls back to periodic snapshot refreshes.
   mjpegSupported: true,
   wallLoopTimer: null,
+  frameSource: 'live', // 'live' | 'published' | 'none'
+  publishedIntervalSeconds: 30,
+  frameBaseUrl: null,   // blob CDN origin when frames are published, not live
 
   // 100% Offline Map State
   map: null,
@@ -370,6 +373,19 @@ function updateLiveCountBadge() {
   }
 }
 
+// Where to load a single frame from. When frames are published rather than
+// live, go straight to the blob CDN: routing them through the function would
+// cost an invocation per image per refresh, for bytes it only redirects to.
+// The cache buster is bucketed to the publish interval so every viewer asks
+// for the same URL within a window and the CDN can actually serve it.
+function frameUrl(cid) {
+  if (state.frameSource === 'published' && state.frameBaseUrl) {
+    const bucket = Math.floor(Date.now() / (state.publishedIntervalSeconds * 1000));
+    return `${state.frameBaseUrl}/frames/${cid}.jpg?v=${bucket}`;
+  }
+  return '/api/snapshot/' + cid + '?t=' + Date.now();
+}
+
 // Ask the server what it can do (MJPEG streaming is not available on Vercel)
 async function loadServerConfig() {
   try {
@@ -377,33 +393,50 @@ async function loadServerConfig() {
     if (!res.ok) return;
     const cfg = await res.json();
     state.mjpegSupported = cfg.mjpeg !== false;
-    if (cfg.upstream === 'blocked') showUpstreamBlockedBanner();
+    state.frameSource = cfg.frames || (cfg.upstream === 'blocked' ? 'none' : 'live');
+    state.publishedIntervalSeconds = cfg.publishedIntervalSeconds || 30;
+    state.frameBaseUrl = cfg.frameBaseUrl || null;
+    if (state.frameSource !== 'live') showFrameSourceBanner();
   } catch (e) {
     // Older server without /api/config: assume MJPEG works
   }
 }
 
-// The BMA site's Cloudflare edge answers datacenter IPs with a bot challenge,
-// so a deployed host gets no frames. Say so instead of showing broken images.
-function showUpstreamBlockedBanner() {
-  if (document.getElementById('upstream-blocked-banner')) return;
+// The BMA site's Cloudflare edge answers datacenter IPs with a bot challenge, so
+// a deployed host cannot fetch frames itself. Say where the pictures are coming
+// from instead of leaving a LIVE badge over an image that never loads.
+function showFrameSourceBanner() {
+  if (document.getElementById('frame-source-banner')) return;
 
+  const published = state.frameSource === 'published';
   const banner = document.createElement('div');
-  banner.id = 'upstream-blocked-banner';
-  banner.className = 'sticky top-0 z-50 px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-center gap-2 text-center';
+  banner.id = 'frame-source-banner';
+  banner.className = published
+    ? 'sticky top-0 z-50 px-4 py-2.5 bg-sky-500/15 border-b border-sky-500/40 text-sky-200 text-xs flex items-center justify-center gap-2 text-center'
+    : 'sticky top-0 z-50 px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-center gap-2 text-center';
+
+  const message = published
+    ? `ภาพจากคลังภาพที่บันทึกไว้ อัปเดตทุก ${state.publishedIntervalSeconds} วินาที - กล้องที่เผยแพร่ไว้เท่านั้นที่มีภาพ`
+    : 'ภาพสดจากกล้องใช้งานไม่ได้จากเซิร์ฟเวอร์นี้ - ระบบของ กทม. ปิดกั้นคำขอจากศูนย์ข้อมูล ข้อมูลกล้อง แผนที่ และสถิติจราจรยังใช้งานได้ตามปกติ';
+
   banner.innerHTML = `
     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0l-7.1 12.25A2 2 0 004.99 19z"/></svg>
-    <span>ภาพสดจากกล้องใช้งานไม่ได้จากเซิร์ฟเวอร์นี้ - ระบบของ กทม. ปิดกั้นคำขอจากศูนย์ข้อมูล ข้อมูลกล้อง แผนที่ และสถิติจราจรยังใช้งานได้ตามปกติ</span>
+    <span>${message}</span>
   `;
   document.body.insertBefore(banner, document.body.firstChild);
 
-  // Stop the LIVE badges from claiming a stream that cannot arrive
+  // Nothing here is a live stream, so stop the badges from claiming one
   document.querySelectorAll('[id^="badge-live-"]').forEach(el => el.classList.add('hidden'));
 }
 
 // Live Streaming Engine for Grid Cards
 function startLiveStreamingEngine() {
   if (state.liveLoopTimer) clearInterval(state.liveLoopTimer);
+
+  // No point polling faster than the publisher writes new frames
+  const refreshMs = state.frameSource === 'published'
+    ? state.publishedIntervalSeconds * 1000
+    : state.liveIntervalMs;
 
   state.liveLoopTimer = setInterval(() => {
     if (!state.liveAll || state.currentView !== 'grid') return;
@@ -414,9 +447,9 @@ function startLiveStreamingEngine() {
         if (state.visibleCameras.has(cid)) {
           refreshCameraFrame(cid);
         }
-      }, (index * 45) % state.liveIntervalMs);
+      }, (index * 45) % refreshMs);
     });
-  }, state.liveIntervalMs);
+  }, refreshMs);
 }
 
 // Multi-View wall: MJPEG keeps itself up to date, but on a serverless host
@@ -424,6 +457,10 @@ function startLiveStreamingEngine() {
 function startWallRefreshEngine() {
   if (state.wallLoopTimer) clearInterval(state.wallLoopTimer);
   if (state.mjpegSupported) return;
+
+  const intervalMs = state.frameSource === 'published'
+    ? state.publishedIntervalSeconds * 1000
+    : state.liveIntervalMs;
 
   state.wallLoopTimer = setInterval(() => {
     if (!state.liveAll || state.currentView !== 'wall') return;
@@ -436,10 +473,10 @@ function startWallRefreshEngine() {
         next.onload = () => {
           if (next.naturalWidth > 100) img.src = next.src;
         };
-        next.src = '/api/snapshot/' + cid + '?t=' + Date.now();
+        next.src = frameUrl(cid);
       }, index * 120);
     });
-  }, state.liveIntervalMs);
+  }, intervalMs);
 }
 
 // Subtle cross-fade for grid cards
@@ -448,7 +485,6 @@ function refreshCameraFrame(cid) {
   if (!currentImg) return;
 
   const nextImg = new Image();
-  const timestamp = Date.now();
   nextImg.onload = () => {
     if (nextImg.naturalWidth > 100) {
       if (state.smoothMotion) {
@@ -464,7 +500,7 @@ function refreshCameraFrame(cid) {
       if (badge) badge.classList.remove('hidden');
     }
   };
-  nextImg.src = '/api/snapshot/' + cid + '?t=' + timestamp;
+  nextImg.src = frameUrl(cid);
 }
 
 // Render 6-bar mini sparkline for 5-minute density history
@@ -546,7 +582,7 @@ function renderGrid() {
 
   if (elements.camerasGrid) {
     elements.camerasGrid.innerHTML = pageItems.map(cam => {
-      const initialUrl = '/api/snapshot/' + cam.id + '?t=' + Date.now();
+      const initialUrl = frameUrl(cam.id);
       const traffic = cam.traffic || { status: 'flowing', status_th: 'คล่องตัว', density: 30, speed_est: '50 กม./ชม.' };
 
       return `
@@ -853,7 +889,7 @@ function updateMapMarkers() {
       const popupContent = `
         <div class="w-64 space-y-2 text-slate-100">
           <div class="aspect-video bg-black rounded-xl overflow-hidden border border-slate-700 relative">
-            <img src="/api/snapshot/${cam.id}?t=${Date.now()}" alt="${cam.name}" class="w-full h-full object-cover" />
+            <img src="${frameUrl(cam.id)}" alt="${cam.name}" class="w-full h-full object-cover" />
             <div class="absolute top-1.5 right-1.5">
               ${getTrafficBadgeHtml(traffic)}
             </div>
@@ -1038,7 +1074,7 @@ function renderWall() {
     return `
       <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col relative group">
         <div class="relative bg-black aspect-video flex items-center justify-center overflow-hidden">
-          <img id="wall-img-${cid}" src="/api/stream/${cid}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" />
+          <img id="wall-img-${cid}" src="${state.mjpegSupported ? '/api/stream/' + cid : frameUrl(cid)}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" />
           
           <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5">
             <span class="px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow flex items-center space-x-1">
@@ -1187,7 +1223,7 @@ function startModalCanvasEngine(cid) {
 
     try {
       const t = Date.now();
-      const res = await fetch('/api/snapshot/' + cid + '?t=' + t);
+      const res = await fetch(frameUrl(cid));
       if (res.ok) {
         const etag = res.headers.get('etag') || '';
         const blob = await res.blob();
@@ -1536,7 +1572,7 @@ function copyStreamUrl(cid) {
 function downloadModalSnapshot() {
   if (!state.activeModalCam) return;
   const cid = state.activeModalCam.id;
-  const url = '/api/snapshot/' + cid + '?t=' + Date.now();
+  const url = frameUrl(cid);
   const a = document.createElement('a');
   a.href = url;
   a.download = 'bma_cctv_' + cid + '_' + Date.now() + '.jpg';

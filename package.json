@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "py": "python3 server.py"
+    "py": "python3 server.py",
+    "publish:frames": "node publisher/publish-frames.js",
+    "publish:once": "node publisher/publish-frames.js --once"
   },
   "keywords": [
     "cctv",
@@ -20,5 +22,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=20.x"
+  },
+  "devDependencies": {
+    "@vercel/blob": "^2.8.0"
   }
 }

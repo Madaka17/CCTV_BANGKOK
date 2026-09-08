@@ -31,7 +31,7 @@ const ROOT_DIR = (function findRoot() {
   return __dirname;
 })();
 // ---------------------------------------------------------------------------
-const BMA_BASE = 'https://cpudapp.bangkok.go.th/bmatraffic';
+const BMA_BASE = process.env.BMA_BASE || 'https://cpudapp.bangkok.go.th/bmatraffic';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // Node's fetch sends a bare request. The BMA WAF is stricter about traffic from
@@ -574,6 +574,19 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
+// Frames published to Vercel Blob by publisher/publish-frames.js, for when the
+// BMA site cannot be reached from here. Set BLOB_BASE_URL on the Vercel project.
+const BLOB_BASE_URL = (process.env.BLOB_BASE_URL || '').replace(/\/+$/, '');
+const blobFrameUrl = (cameraId) =>
+  BLOB_BASE_URL ? `${BLOB_BASE_URL}/frames/${encodeURIComponent(cameraId)}.jpg` : null;
+
+// Where frames come from right now: straight from BMA, from the published
+// snapshots, or nowhere.
+async function frameSource() {
+  if ((await probeUpstream()) === 'ok') return 'live';
+  return BLOB_BASE_URL ? 'published' : 'none';
+}
+
 // Is the BMA site reachable from here? Its Cloudflare edge answers datacenter
 // IPs with a bot challenge, so a deployed host sees no frames at all while a
 // machine in Thailand sees them fine. Cached, since this only changes rarely.
@@ -593,6 +606,39 @@ async function probeUpstream() {
     upstreamProbe = { status: 'blocked', checkedAt: Date.now() };
   }
   return upstreamProbe.status;
+}
+
+// Redirect to the published frame when BMA itself is out of reach. A redirect
+// keeps the image on the blob CDN instead of pushing every byte through the
+// function; returns false when there is nothing published to point at.
+async function servePublishedFrame(cameraId, res) {
+  const url = blobFrameUrl(cameraId);
+  if (!url) return false;
+  if ((await probeUpstream()) === 'ok') return false;
+
+  res.writeHead(302, {
+    'Location': url,
+    'Cache-Control': 'no-cache, private',
+    'X-Frame-Source': 'published'
+  });
+  res.end();
+  return true;
+}
+
+// Same decision, but with the bytes in hand (for endpoints that inline frames)
+async function fetchPublishedFrame(cameraId) {
+  const url = blobFrameUrl(cameraId);
+  if (!url) return null;
+  if ((await probeUpstream()) === 'ok') return null;
+
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const buffer = Buffer.from(await r.arrayBuffer());
+    return buffer.length > 2000 ? buffer : null;
+  } catch (err) {
+    return null;
+  }
 }
 
 const requestHandler = async (req, res) => {
@@ -725,8 +771,16 @@ const requestHandler = async (req, res) => {
   // Runtime capabilities, so the client knows whether MJPEG streaming is available
   if (pathname === '/api/config') {
     const upstream = await probeUpstream();
+    const frames = await frameSource();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ serverless: IS_SERVERLESS, mjpeg: !IS_SERVERLESS, upstream }));
+    res.end(JSON.stringify({
+      serverless: IS_SERVERLESS,
+      mjpeg: !IS_SERVERLESS,
+      upstream,
+      frames,
+      publishedIntervalSeconds: 30,
+      frameBaseUrl: frames === 'published' ? BLOB_BASE_URL : null
+    }));
     return;
   }
 
@@ -766,6 +820,8 @@ const requestHandler = async (req, res) => {
     // A serverless invocation cannot keep a multipart response open, so fall back
     // to a single fresh JPEG. The <img> still renders; the client refreshes it.
     if (IS_SERVERLESS) {
+      if (await servePublishedFrame(cameraId, res)) return;
+
       const frame = await bmaSession.fetchCameraFrame(cameraId);
       if (!frame) {
         res.writeHead(503, { 'Content-Type': 'text/plain' });
@@ -799,6 +855,24 @@ const requestHandler = async (req, res) => {
     if (!cam) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Camera not found' }));
+      return;
+    }
+
+    const publishedFrame = await fetchPublishedFrame(cameraId);
+    if (publishedFrame) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, private' });
+      res.end(JSON.stringify({
+        id: cameraId,
+        total_frames: 1,
+        frames: [{
+          data: 'data:image/jpeg;base64,' + publishedFrame.toString('base64'),
+          timestamp: Date.now(),
+          md5: getMd5(publishedFrame)
+        }],
+        traffic: trafficData.cameras[cameraId] || null,
+        fps: 60,
+        source: 'published'
+      }));
       return;
     }
 
@@ -851,6 +925,8 @@ const requestHandler = async (req, res) => {
       res.end('Camera ID not found');
       return;
     }
+
+    if (await servePublishedFrame(cameraId, res)) return;
 
     // Keep active polling alive for viewed cameras
     bmaSession.startActivePolling(cameraId);
