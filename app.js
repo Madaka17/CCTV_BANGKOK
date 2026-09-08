@@ -149,6 +149,7 @@ function render() {
   });
 
   applyFilter();
+  paintCardCounts();
   watchVisibility();
 
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
@@ -385,24 +386,32 @@ async function loadDetections() {
     if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
     redrawAllBoxes();
 
-    list.forEach(d => {
-      const box = el('c-' + cssId(d.id));
-      if (!box) return;
-      if (d.total === null) {
-        box.textContent = '';
-        return;
-      }
-      const parts = Object.entries(d.counts)
-        .map(([k, n]) => `${LABELS[k] || k} ${n}`)
-        .join(' · ');
-      box.textContent = d.total ? `${d.total} คัน — ${parts}` : 'ไม่พบรถ';
-    });
+    paintCardCounts();
   } catch (err) {
     /* detector off; leave the page as it is */
   }
 }
 
 const LABELS = { car: 'รถยนต์', motorcycle: 'จยย.', bus: 'รถโดยสาร', truck: 'บรรทุก' };
+
+// Reads from the stored readings rather than from one response, so a fresh
+// grid can be filled in too. The catalogue and the detections are fetched at
+// the same moment: when the detections landed first, render() wiped these
+// lines and a new visitor saw no counts until the next poll, twenty seconds on.
+function paintCardCounts() {
+  state.detections.forEach(d => {
+    const box = el('c-' + cssId(d.id));
+    if (!box) return;
+    if (d.total === null) {
+      box.textContent = '';
+      return;
+    }
+    const parts = Object.entries(d.counts)
+      .map(([k, n]) => `${LABELS[k] || k} ${n}`)
+      .join(' · ');
+    box.textContent = d.total ? `${d.total} คัน — ${parts}` : 'ไม่พบรถ';
+  });
+}
 
 function showDetectorNotice(off) {
   let bar = el('detector-notice');
