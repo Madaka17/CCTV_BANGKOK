@@ -782,6 +782,21 @@ function noteUpstreamReachable() {
   if (upstreamProbe.status !== 'ok') upstreamProbe = { status: 'ok', checkedAt: Date.now() };
 }
 
+// Browsers held on to an old app.js through several changes, and no-cache only
+// helps once they have fetched it. The page is small and always revalidated, so
+// stamp its asset URLs with the file's mtime: a changed file is a changed URL,
+// which no cache can get wrong.
+function stampAssets(html) {
+  return html.replace(/(src|href)="(\/(?:js|css)\/[^"?]+)"/g, (match, attr, url) => {
+    try {
+      const stamp = Math.floor(fs.statSync(path.join(ROOT_DIR, 'public', url)).mtimeMs);
+      return `${attr}="${url}?v=${stamp}"`;
+    } catch (err) {
+      return match; // not one of ours; leave it alone
+    }
+  });
+}
+
 // An <img> pointed at a 503 shows the browser's broken-image icon, so answer
 // with a picture that says what happened instead.
 const PLACEHOLDER_SVG = Buffer.from(
@@ -1358,8 +1373,13 @@ const requestHandler = async (req, res) => {
           res.writeHead(404);
           res.end('Not Found');
         } else {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-          res.end(content);
+            const body = Buffer.from(stampAssets(content.toString('utf8')), 'utf8');
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Length': body.length,
+            'Cache-Control': 'no-cache'
+          });
+          res.end(body);
         }
       });
       return;
@@ -1372,9 +1392,26 @@ const requestHandler = async (req, res) => {
     // heuristically - which is why edits kept appearing not to take effect.
     // Images and fonts are fine to hold on to.
     const revalidate = ['.html', '.js', '.css', '.json'].includes(ext);
+
+    if (ext === '.html') {
+      fs.readFile(filePath, 'utf8', (htmlErr, html) => {
+        if (htmlErr) { res.writeHead(500); res.end('Read error'); return; }
+        const body = Buffer.from(stampAssets(html), 'utf8');
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': body.length,
+          'Cache-Control': 'no-cache'
+        });
+        res.end(body);
+      });
+      return;
+    }
+
     res.writeHead(200, {
       'Content-Type': contentType,
-      'Cache-Control': revalidate ? 'no-cache' : 'public, max-age=3600',
+      // A stamped URL is safe to keep; an unstamped one must be rechecked
+      'Cache-Control': parsedUrl.query.v ? 'public, max-age=31536000, immutable'
+                                         : (revalidate ? 'no-cache' : 'public, max-age=3600'),
       'Last-Modified': stats.mtime.toUTCString()
     });
     fs.createReadStream(filePath).pipe(res);

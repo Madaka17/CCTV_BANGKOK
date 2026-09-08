@@ -814,7 +814,19 @@ document.addEventListener('visibilitychange', () => {
   else if (state.cameras.length) watchVisibility();
 });
 
+// So it is possible to tell at a glance whether the browser is running the
+// current code - the question that cost several rounds of debugging
+function showBuild() {
+  const tag = document.querySelector('script[src*="app.js"]');
+  const stamp = tag && new URL(tag.src, location.href).searchParams.get('v');
+  const box = el('build');
+  if (box && stamp) {
+    box.textContent = 'build ' + new Date(Number(stamp)).toLocaleTimeString('th-TH');
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  showBuild();
   startClock();
   loadCameras();
   const btn = el('btn-refresh');
