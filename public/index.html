@@ -67,6 +67,7 @@
       <nav class="mx-auto flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-800">
         <button id="tab-cams" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg><span>กล้องสด</span></button>
         <button id="tab-map" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg><span>แผนที่จราจร</span></button>
+        <button id="tab-advice" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg><span>คำแนะนำปล่อยรถ</span></button>
       </nav>
 
       <div class="flex items-center gap-1.5 shrink-0">
@@ -140,6 +141,26 @@
         </div>
       </div>
       <div id="map" class="w-full rounded-2xl overflow-hidden border border-slate-300 dark:border-slate-800" style="height:72vh"></div>
+    </div>
+
+    <!-- Signal advice, read from the same traffic colours the map draws -->
+    <div id="view-advice" class="hidden space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-300 dark:border-slate-800">
+        <div id="advice-summary" class="text-xs text-slate-600 dark:text-slate-300">กำลังอ่านสีถนนจากแผนที่จราจร…</div>
+        <div class="flex items-center gap-2">
+          <span id="advice-updated" class="text-[11px] text-slate-500"></span>
+          <button id="advice-refresh" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer">รีเฟรช</button>
+        </div>
+      </div>
+
+      <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 px-1">
+        อ่านจากสีเส้นจราจรรอบกล้องแต่ละตัว (รัศมี 700 เมตร) อัปเดตทุก 5 นาที —
+        สีบอกว่าถนน<em>ดูแน่นแค่ไหน</em> ไม่ได้บอกว่ามีรถมากี่คันต่อนาที
+        ตัวเลขวินาทีจึงเป็นจุดตั้งต้นสำหรับคนที่เฝ้าแยกอยู่ ไม่ใช่ค่าที่ตั้งได้เลยโดยไม่ดูหน้างาน
+      </p>
+
+      <div id="advice-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3"></div>
+      <div id="advice-empty" class="hidden py-20 text-center text-sm text-slate-500 dark:text-slate-400"></div>
     </div>
   </main>
 

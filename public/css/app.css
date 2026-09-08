@@ -424,7 +424,7 @@
 }
 
 /* No camera toolbar while the map is up - none of it applies there */
-body.view-map #toolbar {
+body.hide-toolbar #toolbar {
   display: none;
 }
 

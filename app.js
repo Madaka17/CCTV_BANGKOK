@@ -863,17 +863,124 @@ async function loadTrafficIndex() {
   }
 }
 
+// --- Signal advice ---------------------------------------------------------
+//
+// The server reads the same traffic colours the map draws and turns them into
+// one card per road. Longdo repaints about every five minutes, so refreshing
+// faster than that redraws the same numbers.
+
+const ADVICE_REFRESH_MS = 5 * 60 * 1000;
+
+const ACTION_STYLE = {
+  meter: { chip: 'bg-rose-600 text-white', box: 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900' },
+  release: { chip: 'bg-amber-500 text-slate-900', box: 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900' },
+  watch: { chip: 'bg-slate-500 text-white', box: 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700' },
+  normal: { chip: 'bg-emerald-600 text-white', box: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900' },
+  unknown: { chip: 'bg-slate-400 text-white', box: 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700' }
+};
+
+const ACTION_LABEL = {
+  meter: 'หน่วงรถ',
+  release: 'เพิ่มไฟเขียว',
+  watch: 'เฝ้าดู',
+  normal: 'ปกติ',
+  unknown: 'ไม่มีข้อมูล'
+};
+
+const LEVEL_COLOUR = { flowing: '#54C00C', slow: '#FEDE04', jam: '#FF2020' };
+
+/** The green/amber/red proportions of a road, as one bar. */
+function shareBar(share) {
+  const part = (pct, colour) =>
+    pct > 0 ? `<div style="width:${pct}%;background:${colour}"></div>` : '';
+  return `<div class="flex h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+    ${part(share.jam, LEVEL_COLOUR.jam)}${part(share.slow, LEVEL_COLOUR.slow)}${part(share.flowing, LEVEL_COLOUR.flowing)}
+  </div>`;
+}
+
+function directionChips(directions) {
+  if (!directions) return '';
+  const chip = (name, d) => `<span class="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+      <span style="color:${LEVEL_COLOUR[d.level]}">&#9679;</span> ${name} ${escapeHtml(d.label)}
+    </span>`;
+  return `<div class="flex flex-wrap gap-1.5 text-[11px]">
+    ${chip('ขาไป', directions.forward)}${chip('ขากลับ', directions.reverse)}
+  </div>`;
+}
+
+function adviceCard(road) {
+  const style = ACTION_STYLE[road.advice.action] || ACTION_STYLE.unknown;
+  const c = road.congestion;
+  const reading = c
+    ? `${shareBar(c.share)}
+       <p class="text-[11px] text-slate-500 dark:text-slate-400">
+         ติดขัด ${c.share.jam}% &middot; ชะลอตัว ${c.share.slow}% &middot; คล่องตัว ${c.share.flowing}%
+         <span class="text-slate-400 dark:text-slate-500">จากถนน ${c.km} กม. รอบกล้อง</span>
+       </p>`
+    : '<p class="text-[11px] text-slate-500">ไม่มีเส้นจราจรที่ระบายสีรอบจุดนี้</p>';
+
+  return `<article class="p-4 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-300 dark:border-slate-800 space-y-2.5">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 class="text-sm font-semibold leading-snug">${escapeHtml(road.name)}</h3>
+        <p class="text-[11px] text-slate-500 mt-0.5">${c ? escapeHtml(c.label) : 'ไม่มีข้อมูล'}</p>
+      </div>
+      <span class="shrink-0 px-2 py-0.5 rounded-lg text-[11px] font-semibold ${style.chip}">
+        ${ACTION_LABEL[road.advice.action]}
+      </span>
+    </div>
+    ${reading}
+    ${directionChips(road.directions)}
+    <div class="rounded-xl border p-3 ${style.box}">
+      <p class="text-xs font-semibold leading-snug">${escapeHtml(road.advice.headline)}</p>
+      <p class="text-[11px] mt-1.5 leading-relaxed text-slate-600 dark:text-slate-300">${escapeHtml(road.advice.detail)}</p>
+    </div>
+  </article>`;
+}
+
+function renderAdvice(data) {
+  const list = el('advice-list');
+  const empty = el('advice-empty');
+  const roads = data.roads || [];
+
+  list.innerHTML = roads.map(adviceCard).join('');
+  empty.classList.toggle('hidden', roads.length > 0);
+  if (!roads.length) {
+    empty.textContent = data.error ? 'อ่านข้อมูลจราจรไม่สำเร็จ: ' + data.error : 'ยังไม่มีข้อมูลจราจร';
+  }
+
+  const acting = roads.filter((r) => r.advice.action === 'meter' || r.advice.action === 'release').length;
+  const summary = el('advice-summary');
+  summary.textContent = acting
+    ? `${acting} จาก ${roads.length} ถนนควรปรับการปล่อยรถ`
+    : `ทั้ง ${roads.length} ถนนยังไม่ต้องปรับอะไร`;
+  const stamp = el('advice-updated');
+  if (stamp) stamp.textContent = 'อัปเดต ' + new Date(data.updatedAt).toLocaleTimeString('th-TH');
+}
+
+async function loadAdvice() {
+  const summary = el('advice-summary');
+  try {
+    const res = await fetch('/api/traffic-advice');
+    renderAdvice(await res.json());
+  } catch (err) {
+    if (summary) summary.textContent = 'อ่านข้อมูลจราจรไม่สำเร็จ';
+  }
+}
+
 // --- Views -----------------------------------------------------------------
 
 function switchView(view) {
   state.view = view;
   el('view-cams').classList.toggle('hidden', view !== 'cams');
   el('view-map').classList.toggle('hidden', view !== 'map');
+  el('view-advice').classList.toggle('hidden', view !== 'advice');
 
   el('tab-cams').classList.toggle('is-active', view === 'cams');
   el('tab-map').classList.toggle('is-active', view === 'map');
-  // The search box and the play controls have nothing to act on in map view
-  document.body.classList.toggle('view-map', view === 'map');
+  el('tab-advice').classList.toggle('is-active', view === 'advice');
+  // The search box and the play controls have nothing to act on outside the grid
+  document.body.classList.toggle('hide-toolbar', view !== 'cams');
 
   if (view === 'map') {
     // 19 grid players would keep streaming behind the map
@@ -882,6 +989,9 @@ function switchView(view) {
     setTimeout(() => state.map && state.map.resize(), 60);
     if (state.map && state.map.isStyleLoaded()) addCameraMarkers();
     loadTrafficIndex();
+  } else if (view === 'advice') {
+    stopAllPlayers();
+    loadAdvice();
   } else {
     watchVisibility();
   }
@@ -923,7 +1033,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btn) btn.addEventListener('click', loadCameras);
   el('tab-cams').addEventListener('click', () => switchView('cams'));
   el('tab-map').addEventListener('click', () => switchView('map'));
+  el('tab-advice').addEventListener('click', () => switchView('advice'));
   el('tab-cams').classList.add('is-active');
+  const adviceBtn = el('advice-refresh');
+  if (adviceBtn) adviceBtn.addEventListener('click', loadAdvice);
 
   const search = el('search');
   if (search) search.addEventListener('input', applyFilter);
@@ -943,6 +1056,7 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('theme', dark ? 'dark' : 'light');
   });
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
+  setInterval(() => { if (state.view === 'advice') loadAdvice(); }, ADVICE_REFRESH_MS);
 
   el('detail-close').addEventListener('click', closeDetail);
   el('detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });

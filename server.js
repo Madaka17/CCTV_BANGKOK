@@ -10,6 +10,8 @@ const path = require('node:path');
 const url = require('node:url');
 const crypto = require('node:crypto');
 
+const { buildAdvice } = require('./traffic-advice.js');
+
 const PORT = process.env.PORT || 3000;
 
 // --- Serverless (Vercel) compatibility -------------------------------------
@@ -33,6 +35,9 @@ const ROOT_DIR = (function findRoot() {
 // ---------------------------------------------------------------------------
 const BMA_BASE = process.env.BMA_BASE || 'https://cpudapp.bangkok.go.th/bmatraffic';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+const ADVICE_TTL_MS = 5 * 60 * 1000;
+let adviceCache = { at: 0, data: null };
 
 // Node's fetch sends a bare request. The BMA WAF is stricter about traffic from
 // outside Thailand, so send what a real browser would.
@@ -1059,6 +1064,30 @@ const requestHandler = async (req, res) => {
 
   // Longdo's overall traffic index, the one number their own sites show.
   // Proxied so the page is not making a jsonp call of its own.
+  // Reading the traffic tiles means fetching 28 of them and decoding 30,000
+  // segments. Longdo repaints roughly every five minutes, so asking more often
+  // than that costs bandwidth and returns the same colours.
+  if (pathname === '/api/traffic-advice') {
+    try {
+      if (!adviceCache.data || Date.now() - adviceCache.at > ADVICE_TTL_MS) {
+        const { list } = await loadVideoCameras();
+        adviceCache = {
+          at: Date.now(),
+          data: await buildAdvice(list, { userAgent: USER_AGENT })
+        };
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=300'
+      });
+      res.end(JSON.stringify(adviceCache.data));
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: String(err.message || err), roads: [] }));
+    }
+    return;
+  }
+
   if (pathname === '/api/traffic-index') {
     try {
       const r = await fetch(`https://traffic.longdo.com/api/json/traffic/index?time=${Date.now()}`, {
