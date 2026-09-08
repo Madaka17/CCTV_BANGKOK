@@ -31,6 +31,8 @@ const state = {
   frameSource: 'live', // 'live' | 'published' | 'none'
   publishedIntervalSeconds: 30,
   frameBaseUrl: null,   // blob CDN origin when frames are published, not live
+  videoCameras: [],
+  hlsPlayers: new Map(), // camid -> Hls instance
 
   // 100% Offline Map State
   map: null,
@@ -86,6 +88,12 @@ const elements = {
   tabMap: getEl('tab-map'),
   tabWall: getEl('tab-wall'),
   tabApi: getEl('tab-api'),
+  tabVideo: getEl('tab-video'),
+  viewVideo: getEl('view-video'),
+  videoGrid: getEl('video-grid'),
+  videoStatus: getEl('video-status'),
+  videoCountBadge: getEl('video-count-badge'),
+  btnVideoRefresh: getEl('btn-video-refresh'),
   wallGrid: getEl('wall-grid'),
   wallCountBadge: getEl('wall-count-badge'),
   wall2x2Btn: getEl('wall-grid-2x2'),
@@ -401,6 +409,123 @@ function frameUrl(cid) {
     return `${state.frameBaseUrl}/frames/${cid}.jpg?v=${bucket}`;
   }
   return '/api/snapshot/' + cid + '?t=' + Date.now();
+}
+
+// ============================================================================
+// Live HLS cameras
+//
+// These come from a catalogue of cameras that publish real H.264 over HLS with
+// open CORS, so the browser plays them straight from the source - no polling,
+// no server in the path, and they work from a deployed host as well as here.
+// ============================================================================
+
+async function loadVideoCameras(force = false) {
+  if (!elements.videoGrid) return;
+  if (state.videoCameras.length && !force) {
+    renderVideoCameras();
+    return;
+  }
+
+  elements.videoGrid.innerHTML = `
+    <div class="col-span-full py-16 text-center text-slate-400 text-sm">กำลังโหลดรายการกล้อง...</div>`;
+
+  try {
+    const res = await fetch('/api/video-cameras');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    state.videoCameras = data.cameras || [];
+    if (elements.videoCountBadge) elements.videoCountBadge.textContent = state.videoCameras.length;
+    renderVideoCameras();
+  } catch (err) {
+    elements.videoGrid.innerHTML = `
+      <div class="col-span-full py-16 text-center text-slate-400 text-sm">
+        โหลดรายการกล้องไม่สำเร็จ (${err.message})
+      </div>`;
+  }
+}
+
+function renderVideoCameras() {
+  stopAllHlsPlayers();
+
+  const cams = state.videoCameras;
+  if (elements.videoStatus) {
+    elements.videoStatus.textContent = `${cams.length} กล้อง`;
+  }
+
+  if (!cams.length) {
+    elements.videoGrid.innerHTML = `
+      <div class="col-span-full py-16 text-center text-slate-400 text-sm">ยังไม่มีกล้องวิดีโอในขณะนี้</div>`;
+    return;
+  }
+
+  elements.videoGrid.innerHTML = cams.map(cam => `
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col">
+      <div class="relative bg-black aspect-video flex items-center justify-center">
+        <video id="hls-${cam.id}" class="w-full h-full object-contain" muted playsinline autoplay
+               poster="${cam.image || ''}"></video>
+        <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5">
+          <span class="px-2 py-0.5 text-[10px] font-bold bg-emerald-600 text-white rounded shadow flex items-center space-x-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span><span>HLS</span>
+          </span>
+        </div>
+        <div id="hls-msg-${cam.id}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
+      </div>
+      <div class="p-3 flex-1 flex flex-col">
+        <h3 class="text-sm font-semibold text-white leading-snug">${cam.title}</h3>
+        <p class="text-[11px] text-slate-500 mt-1">${cam.org}</p>
+      </div>
+    </div>
+  `).join('');
+
+  cams.forEach(cam => attachHlsPlayer(cam));
+}
+
+function attachHlsPlayer(cam) {
+  const video = document.getElementById('hls-' + cam.id);
+  const msg = document.getElementById('hls-msg-' + cam.id);
+  if (!video) return;
+
+  const fail = (why) => { if (msg) msg.textContent = why; };
+  video.addEventListener('playing', () => { if (msg) msg.textContent = ''; });
+
+  // Safari plays HLS natively; everywhere else needs hls.js
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = cam.hls;
+    video.play().catch(() => fail('แตะเพื่อเล่น'));
+    return;
+  }
+
+  if (!window.Hls || !window.Hls.isSupported()) {
+    fail('เบราว์เซอร์นี้เล่น HLS ไม่ได้');
+    return;
+  }
+
+  const hls = new window.Hls({ liveDurationInfinity: true, lowLatencyMode: true });
+  hls.loadSource(cam.hls);
+  hls.attachMedia(video);
+  hls.on(window.Hls.Events.ERROR, (_e, data) => {
+    if (!data.fatal) return;
+    // A live camera dropping out is normal; recover rather than give up
+    if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+      fail('กำลังเชื่อมต่อใหม่...');
+      hls.startLoad();
+    } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+      hls.recoverMediaError();
+    } else {
+      fail('กล้องนี้ไม่พร้อมใช้งาน');
+      hls.destroy();
+      state.hlsPlayers.delete(cam.id);
+    }
+  });
+
+  state.hlsPlayers.set(cam.id, hls);
+}
+
+function stopAllHlsPlayers() {
+  for (const hls of state.hlsPlayers.values()) {
+    try { hls.destroy(); } catch (e) { /* already gone */ }
+  }
+  state.hlsPlayers.clear();
 }
 
 // Ask the server what it can do (MJPEG streaming is not available on Vercel)
@@ -774,12 +899,14 @@ function switchView(viewName) {
   if (elements.viewMap) elements.viewMap.classList.toggle('hidden', viewName !== 'map');
   if (elements.viewWall) elements.viewWall.classList.toggle('hidden', viewName !== 'wall');
   if (elements.viewApi) elements.viewApi.classList.toggle('hidden', viewName !== 'api');
+  if (elements.viewVideo) elements.viewVideo.classList.toggle('hidden', viewName !== 'video');
 
   const tabs = [
     { btn: elements.tabGrid, name: 'grid' },
     { btn: elements.tabMap, name: 'map' },
     { btn: elements.tabWall, name: 'wall' },
-    { btn: elements.tabApi, name: 'api' }
+    { btn: elements.tabApi, name: 'api' },
+    { btn: elements.tabVideo, name: 'video' }
   ];
 
   tabs.forEach(t => {
@@ -805,6 +932,13 @@ function switchView(viewName) {
 
   if (viewName === 'wall') {
     renderWall();
+  }
+
+  if (viewName === 'video') {
+    loadVideoCameras();
+  } else {
+    // Each player holds an open connection; leaving the view should close them
+    stopAllHlsPlayers();
   }
 }
 
@@ -1720,6 +1854,8 @@ function initEventListeners() {
   addSafe(elements.tabMap, 'click', () => switchView('map'));
   addSafe(elements.tabWall, 'click', () => switchView('wall'));
   addSafe(elements.tabApi, 'click', () => switchView('api'));
+  addSafe(elements.tabVideo, 'click', () => switchView('video'));
+  addSafe(elements.btnVideoRefresh, 'click', () => loadVideoCameras(true));
 
   // Offline Map Toolbar Listeners
   const btnDark = getEl('map-style-dark');

@@ -114,6 +114,11 @@
               <span>Multi-View <span id="wall-count-badge" class="ml-1 px-1.5 py-0.2 text-[10px] bg-rose-500/30 text-rose-300 rounded-full font-bold">4</span></span>
             </button>
 
+            <button id="tab-video" class="view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+              <span>วิดีโอสด <span id="video-count-badge" class="ml-1 px-1.5 py-0.2 text-[10px] bg-emerald-500/30 text-emerald-300 rounded-full font-bold">0</span></span>
+            </button>
+
             <button id="tab-api" class="view-tab px-2.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer" title="API และ คู่มือ">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
               <span class="hidden md:inline">API</span>
@@ -452,6 +457,28 @@
       </div>
     </div>
 
+    <!-- VIEW: Live HLS video cameras -->
+    <div id="view-video" class="view-panel hidden space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-slate-900/90 rounded-2xl border border-slate-800 shadow-md">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center space-x-2">
+            <span>🎥 วิดีโอสด ถนนในกรุงเทพ</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">
+            สตรีมวิดีโอจริง H.264 ผ่าน HLS จาก iTIC Motion และกรมทางหลวง เฉพาะถนนในเมือง ไม่รวมทางด่วน
+          </p>
+        </div>
+        <div class="flex items-center space-x-2">
+          <span id="video-status" class="text-xs text-slate-400"></span>
+          <button id="btn-video-refresh" class="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold cursor-pointer border border-slate-700">โหลดใหม่</button>
+        </div>
+      </div>
+
+      <div id="video-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <!-- HLS players -->
+      </div>
+    </div>
+
     <!-- VIEW 4: API & Embed Integration Guide -->
     <div id="view-api" class="view-panel hidden space-y-6 max-w-4xl mx-auto">
       <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-xl space-y-5">
@@ -700,6 +727,7 @@
     <span id="toast-text">ข้อความ</span>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.12"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

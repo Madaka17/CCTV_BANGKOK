@@ -628,6 +628,75 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
+// Live HLS cameras, from the catalogue Longdo's map API reads.
+//
+// These are a different animal to the BMA feed: real H.264 over HLS, served
+// with Access-Control-Allow-Origin: *, needing no session and no key. A
+// browser plays them directly, so they work from a deployed host too - which
+// the BMA cameras never can.
+const VIDEO_CATALOGUE_URL = 'https://camera.longdo.com/feed/?command=json';
+// Titles are prefixed with the province, so that is the reliable filter -
+// coordinates alone drag in Nonthaburi and Pathum Thani.
+const BKK_PREFIX = '(\u0e01\u0e23\u0e38\u0e07\u0e40\u0e17\u0e1e\u0e21\u0e2b\u0e32\u0e19\u0e04\u0e23)';
+// Drop cameras whose road IS an expressway, but keep city streets that merely
+// sit at a junction with one - "\u0e16.\u0e1e\u0e23\u0e30\u0e23\u0e32\u0e214 \u0e41\u0e22\u0e01\u0e17\u0e32\u0e07\u0e14\u0e48\u0e27\u0e19..." is Rama IV, a street.
+const EXPRESSWAY_START = /^(\u0e17\u0e32\u0e07\u0e1e\u0e34\u0e40\u0e28\u0e29|\u0e17\u0e32\u0e07\u0e14\u0e48\u0e27\u0e19|\u0e21\u0e2d\u0e40\u0e15\u0e2d\u0e23\u0e4c\u0e40\u0e27\u0e22\u0e4c|motorway)/i;
+
+let videoCameras = { list: [], fetchedAt: 0, error: null };
+
+async function loadVideoCameras() {
+  if (videoCameras.list.length && Date.now() - videoCameras.fetchedAt < 10 * 60 * 1000) {
+    return videoCameras;
+  }
+
+  try {
+    const r = await fetch(VIDEO_CATALOGUE_URL, {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!r.ok) throw new Error(`catalogue HTTP ${r.status}`);
+    const raw = await r.json();
+    const all = Array.isArray(raw) ? raw : (raw.data || raw.cameras || []);
+
+    const list = all
+      .filter(c => c.hls_url)
+      .map(c => ({
+        id: c.camid,
+        title: (c.title || '').trim(),
+        lat: Number(c.latitude),
+        lng: Number(c.longitude),
+        org: c.organization || '',
+        hls: c.hls_url,
+        image: c.imgurl || null
+      }))
+      .filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lng))
+      .filter(c => c.title.startsWith(BKK_PREFIX))
+      .map(c => ({ ...c, title: c.title.slice(BKK_PREFIX.length).trim() }))
+      .filter(c => !EXPRESSWAY_START.test(c.title));
+
+    // The catalogue keeps cameras that have been taken down, and a dead one
+    // renders as a black tile. Ask each stream once per refresh instead.
+    const alive = await Promise.all(list.map(async (c) => {
+      try {
+        const probe = await fetch(c.hls, { signal: AbortSignal.timeout(8000) });
+        return probe.ok ? c : null;
+      } catch (err) {
+        return null;
+      }
+    }));
+    const live = alive.filter(Boolean);
+
+    videoCameras = { list: live, fetchedAt: Date.now(), error: null };
+    console.log(`Loaded ${live.length} live video cameras in Bangkok (${list.length - live.length} offline)`);
+  } catch (err) {
+    // Keep whatever was loaded before rather than emptying the view
+    videoCameras = { ...videoCameras, fetchedAt: Date.now(), error: String(err.message || err) };
+    console.error('Video camera catalogue failed:', err.message);
+  }
+
+  return videoCameras;
+}
+
 // Frames published to Cloudflare R2 by publisher/publish-frames.js, for when
 // the BMA site cannot be reached from here.
 //
@@ -930,6 +999,17 @@ const requestHandler = async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // Cameras a browser can play by itself, wherever it is
+  if (pathname === '/api/video-cameras') {
+    const { list, fetchedAt, error } = await loadVideoCameras();
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'public, max-age=300'
+    });
+    res.end(JSON.stringify({ total: list.length, updatedAt: fetchedAt, error, cameras: list }));
     return;
   }
 
