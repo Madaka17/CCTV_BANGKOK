@@ -109,6 +109,38 @@
     </div>
   </main>
 
+  <!-- Camera detail: what the detector saw, and the live stream -->
+  <div id="detail" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto">
+    <div class="max-w-5xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
+      <div class="flex items-start justify-between gap-3 p-4 border-b border-slate-800">
+        <div class="min-w-0">
+          <h2 id="detail-title" class="text-base font-bold text-white leading-snug truncate"></h2>
+          <p id="detail-org" class="text-[11px] text-slate-500 mt-0.5"></p>
+        </div>
+        <button id="detail-close" class="shrink-0 p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer" title="ปิด">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="px-4 pt-3 flex items-center gap-2">
+        <button id="detail-tab-det" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 text-white cursor-pointer">ผลตรวจจับ</button>
+        <button id="detail-tab-live" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer">วิดีโอสด</button>
+        <span id="detail-age" class="ml-auto text-[11px] text-slate-500"></span>
+      </div>
+
+      <div class="p-4">
+        <div class="relative bg-black rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+          <img id="detail-img" class="w-full h-full object-contain" alt="" />
+          <video id="detail-video" class="w-full h-full object-contain hidden" muted playsinline controls></video>
+          <div id="detail-msg" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 pointer-events-none"></div>
+        </div>
+
+        <div id="detail-counts" class="mt-4 flex flex-wrap gap-2"></div>
+        <p id="detail-note" class="mt-3 text-[11px] text-slate-500 leading-relaxed"></p>
+      </div>
+    </div>
+  </div>
+
   <footer class="border-t border-slate-800/80 py-4">
     <div class="max-w-[1600px] mx-auto px-4 sm:px-6 text-[11px] text-slate-500 leading-relaxed">
       <p id="source-note">ภาพจากกล้องของ iTIC Motion และกรมทางหลวง เผยแพร่ผ่านระบบแผนที่ Longdo</p>

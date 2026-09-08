@@ -18,6 +18,9 @@ const state = {
   maxPlaying: Number(localStorage.getItem('maxPlaying') || 3),
   playing: [],        // camera ids, oldest first
   observer: null,
+  detail: null,       // camera open in the detail view
+  detailMode: 'det',  // 'det' | 'live'
+  detailTimer: null,
   map: null,
   markers: []
 };
@@ -89,8 +92,11 @@ function render() {
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
-      <div class="p-3">
-        <h2 class="text-sm font-semibold text-white leading-snug">${escapeHtml(cam.title)}</h2>
+      <div class="p-3 cursor-pointer hover:bg-slate-800/40 transition-colors" data-detail="${escapeHtml(cam.id)}">
+        <h2 class="text-sm font-semibold text-white leading-snug flex items-start gap-1.5">
+          <span class="flex-1">${escapeHtml(cam.title)}</span>
+          <svg class="w-4 h-4 text-slate-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        </h2>
         <p class="text-[11px] text-slate-500 mt-1">${escapeHtml(cam.org)}</p>
         <p id="c-${cssId(cam.id)}" class="text-[11px] text-emerald-400 mt-1 font-medium"></p>
       </div>
@@ -101,6 +107,13 @@ function render() {
     btn.addEventListener('click', () => {
       const cam = state.cameras.find(c => c.id === btn.dataset.cam);
       if (cam) playCamera(cam);
+    });
+  });
+
+  grid.querySelectorAll('[data-detail]').forEach(node => {
+    node.addEventListener('click', () => {
+      const cam = state.cameras.find(c => c.id === node.dataset.detail);
+      if (cam) openDetail(cam);
     });
   });
 
@@ -279,6 +292,8 @@ async function loadDetections() {
       badge.textContent = on ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
     }
 
+    if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
+
     list.forEach(d => {
       const box = el('c-' + cssId(d.id));
       if (!box) return;
@@ -329,6 +344,146 @@ function refreshBoxImages() {
     const img = el('b-' + cssId(cam.id));
     if (img) img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
   });
+}
+
+// --- Camera detail ---------------------------------------------------------
+//
+// Opens on the detector's annotated frame, since that is what the counts are
+// read off, with the live stream a tab away. Only one stream runs here, and
+// the grid's players are stopped while it is open.
+
+function openDetail(cam) {
+  state.detail = cam;
+  state.detailMode = 'det';
+  stopAllPlayers();
+
+  el('detail-title').textContent = cam.title;
+  el('detail-org').textContent = cam.org;
+  el('detail').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  renderDetail();
+  if (state.detailTimer) clearInterval(state.detailTimer);
+  state.detailTimer = setInterval(() => {
+    if (state.detail && state.detailMode === 'det') renderDetail(true);
+  }, 15000);
+}
+
+function closeDetail() {
+  if (state.detailTimer) { clearInterval(state.detailTimer); state.detailTimer = null; }
+  const video = el('detail-video');
+  const hls = state.players.get('detail');
+  if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
+  if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
+
+  state.detail = null;
+  el('detail').classList.add('hidden');
+  document.body.style.overflow = '';
+  if (state.view === 'cams') watchVisibility();
+}
+
+function setDetailMode(mode) {
+  if (!state.detail) return;
+  state.detailMode = mode;
+  el('detail-tab-det').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
+    (mode === 'det' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700');
+  el('detail-tab-live').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
+    (mode === 'live' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700');
+  renderDetail();
+}
+
+function renderDetail(imageOnly = false) {
+  const cam = state.detail;
+  if (!cam) return;
+
+  const img = el('detail-img');
+  const video = el('detail-video');
+  const msg = el('detail-msg');
+  const reading = state.detections.get(cam.id);
+
+  if (state.detailMode === 'det') {
+    img.classList.remove('hidden');
+    video.classList.add('hidden');
+
+    const hls = state.players.get('detail');
+    if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
+    if (!imageOnly) { try { video.pause(); } catch (e) {} }
+
+    if (reading && reading.total !== null) {
+      img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
+      msg.textContent = '';
+    } else {
+      img.removeAttribute('src');
+      msg.textContent = reading && reading.error
+        ? 'ตรวจจับไม่สำเร็จ: ' + reading.error
+        : 'ยังไม่มีผลตรวจจับ — ตัวตรวจจับอาจไม่ได้เปิดอยู่';
+    }
+  } else {
+    img.classList.add('hidden');
+    video.classList.remove('hidden');
+    msg.textContent = '';
+    attachDetailPlayer(cam, video, msg);
+  }
+
+  if (imageOnly) return;
+  renderDetailCounts(cam, reading);
+}
+
+function renderDetailCounts(cam, reading) {
+  const box = el('detail-counts');
+  const age = el('detail-age');
+  const note = el('detail-note');
+
+  if (!reading || reading.total === null) {
+    box.innerHTML = '';
+    age.textContent = '';
+    note.textContent = reading && reading.error
+      ? ''
+      : 'ตัวตรวจจับทำงานบนเครื่องที่รันเซิร์ฟเวอร์ ถ้าไม่ได้เปิดไว้จะไม่มีตัวเลข';
+    return;
+  }
+
+  const chip = (label, value, tone) =>
+    `<span class="px-3 py-1.5 rounded-xl ${tone} text-xs font-semibold">${label} <span class="font-bold">${value}</span></span>`;
+
+  box.innerHTML =
+    chip('รวม', reading.total + ' คัน', 'bg-sky-500/15 border border-sky-500/30 text-sky-300') +
+    Object.entries(reading.counts)
+      .map(([k, n]) => chip(LABELS[k] || k, n, 'bg-slate-800 border border-slate-700 text-slate-300'))
+      .join('');
+
+  const seconds = Math.round(Date.now() / 1000 - reading.at);
+  age.textContent = `ตรวจเมื่อ ${seconds < 60 ? seconds + ' วินาทีที่แล้ว' : Math.round(seconds / 60) + ' นาทีที่แล้ว'}`;
+  note.textContent = 'นับจากภาพนิ่งหนึ่งเฟรม ไม่ใช่การนับรถที่ผ่านไป — ความแม่นยำขึ้นกับมุมกล้อง กล้องมุมสูงมากจะตรวจได้น้อยกว่าความจริง';
+}
+
+function attachDetailPlayer(cam, video, msg) {
+  const say = (t) => { if (msg) msg.textContent = t; };
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = cam.hls;
+    video.play().catch(() => say('แตะเพื่อเล่น'));
+    return;
+  }
+  if (!window.Hls || !window.Hls.isSupported()) { say('เบราว์เซอร์นี้เล่นวิดีโอสดไม่ได้'); return; }
+
+  const old = state.players.get('detail');
+  if (old) { try { old.destroy(); } catch (e) {} }
+
+  const hls = new window.Hls({
+    liveDurationInfinity: true, liveSyncDurationCount: 1,
+    maxBufferLength: 8, backBufferLength: 0
+  });
+  hls.loadSource(cam.hls);
+  hls.attachMedia(video);
+  hls.on(window.Hls.Events.ERROR, (_e, d) => {
+    if (!d.fatal) return;
+    if (d.type === window.Hls.ErrorTypes.NETWORK_ERROR) { say('กำลังเชื่อมต่อใหม่...'); hls.startLoad(); }
+    else if (d.type === window.Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+    else { say('กล้องนี้ไม่พร้อมใช้งาน'); hls.destroy(); }
+  });
+  video.addEventListener('playing', () => say(''), { once: true });
+  state.players.set('detail', hls);
 }
 
 // --- Traffic map -----------------------------------------------------------
@@ -500,6 +655,12 @@ document.addEventListener('DOMContentLoaded', () => {
   el('tab-cams').addEventListener('click', () => switchView('cams'));
   el('tab-map').addEventListener('click', () => switchView('map'));
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
+
+  el('detail-close').addEventListener('click', closeDetail);
+  el('detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
+  el('detail-tab-det').addEventListener('click', () => setDetailMode('det'));
+  el('detail-tab-live').addEventListener('click', () => setDetailMode('live'));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.detail) closeDetail(); });
 
   const sel = el('max-playing');
   if (sel) {
