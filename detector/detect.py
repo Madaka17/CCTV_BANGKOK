@@ -113,8 +113,10 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
         raise RuntimeError("could not decode frame")
 
     # These are traffic cameras looking down a street, so the vehicles are small.
-    # Inferring at 1280 rather than the default 640 roughly doubles what is found;
-    # yolov8n missed almost everything, so the small model is the floor here.
+    # Inferring at 1280 rather than the default 640 roughly doubles what is found.
+    # Going past 1280 makes it worse: the cameras send 600x480 to 1280x720, so a
+    # larger size is only upscaling. Measured over four frames, 1920 found 14
+    # vehicles where 1280 found 21.
     result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
 
     counts = {}
@@ -632,8 +634,16 @@ def main():
     ap.add_argument("--port", type=int, default=5056)
     ap.add_argument("--interval", type=int, default=0,
                     help="seconds between all-camera sweeps; 0 disables them")
-    ap.add_argument("--conf", type=float, default=0.25)
-    ap.add_argument("--weights", default="yolov8s.pt")
+    # 0.25 was throwing away real vehicles: on a busy frame it found 7 of the
+    # 15 a person can count. Below about 0.12 the misses turn into whole-bush
+    # and whole-building boxes, so 0.15 is where the trade sits.
+    ap.add_argument("--conf", type=float, default=0.15)
+    # yolov8s is fast but weak on these views: on one busy frame it found 7
+    # vehicles where yolo11m found 15 and yolo11x found 20, and it misread a
+    # wall as a truck. yolo11x costs 169ms a frame against yolov8s's 32ms, but
+    # the streams deliver frames far more slowly than that - the GPU sits at
+    # 0-3% between sweeps - so the larger model buys accuracy for free here.
+    ap.add_argument("--weights", default="yolo11x.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--focus-workers", type=int, default=2,
                     help="cameras that can be tracked at once; each is a stream and "
