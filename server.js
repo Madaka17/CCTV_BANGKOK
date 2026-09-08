@@ -825,9 +825,14 @@ const requestHandler = async (req, res) => {
   // Why published frames are or are not being used. FRAMES_BASE_URL is a public
   // bucket URL, so reporting it here gives nothing away.
   if (pathname === '/api/health/frames') {
+    const configPath = path.join(ROOT_DIR, 'frames.config.json');
     const result = {
       framesBaseUrlSet: Boolean(FRAMES_BASE_URL),
       framesBaseUrl: FRAMES_BASE_URL || null,
+      source: process.env.FRAMES_BASE_URL ? 'env' : (FRAMES_BASE_URL ? 'frames.config.json' : 'none'),
+      rootDir: ROOT_DIR,
+      configPath,
+      configExists: fs.existsSync(configPath),
       manifest: null
     };
 

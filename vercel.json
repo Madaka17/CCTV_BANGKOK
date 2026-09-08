@@ -7,7 +7,8 @@
       "config": {
         "includeFiles": [
           "data/**",
-          "public/**"
+          "public/**",
+          "frames.config.json"
         ],
         "maxLambdaSize": "50mb",
         "memory": 1024,
