@@ -811,6 +811,42 @@ const requestHandler = async (req, res) => {
     return;
   }
 
+  // Why published frames are or are not being used. FRAMES_BASE_URL is a public
+  // bucket URL, so reporting it here gives nothing away.
+  if (pathname === '/api/health/frames') {
+    const result = {
+      framesBaseUrlSet: Boolean(FRAMES_BASE_URL),
+      framesBaseUrl: FRAMES_BASE_URL || null,
+      manifest: null
+    };
+
+    if (FRAMES_BASE_URL) {
+      const url = `${FRAMES_BASE_URL}/frames/manifest.json`;
+      const started = Date.now();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        const body = await r.text();
+        let parsed = null;
+        try { parsed = JSON.parse(body); } catch (e) { /* report the raw body instead */ }
+        result.manifest = {
+          url,
+          ms: Date.now() - started,
+          status: r.status,
+          contentType: r.headers.get('content-type'),
+          count: parsed && parsed.count,
+          updatedAt: parsed && parsed.updatedAt,
+          snippet: parsed ? undefined : body.replace(/\s+/g, ' ').slice(0, 200)
+        };
+      } catch (err) {
+        result.manifest = { url, ms: Date.now() - started, error: err.name + ': ' + err.message };
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
   // Runtime capabilities, so the client knows whether MJPEG streaming is available
   if (pathname === '/api/config') {
     const upstream = await probeUpstream();
