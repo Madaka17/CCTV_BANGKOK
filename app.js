@@ -86,7 +86,7 @@ function render() {
           <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span><span>LIVE</span>
         </span>
 
-        <button data-fullscreen="${cssId(cam.id)}"
+        <button data-fullscreen="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
                 class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-lg cursor-pointer"
                 title="เต็มจอ">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
@@ -127,11 +127,17 @@ function render() {
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
     btn.addEventListener('click', () => {
       const video = el('v-' + btn.dataset.fullscreen);
-      if (!video) return;
+      const cam = state.cameras.find(c => c.id === btn.dataset.cam);
+      if (!video || !cam) return;
+
+      // Going fullscreen on a card that was not playing used to enlarge its
+      // poster: a still picture, no stream, nothing focused, and so no boxes.
+      if (!state.playing.includes(cam.id)) playCamera(cam);
+
       // Fullscreen the wrapper, not the video: a bare video element drops the
       // box overlay, which is the thing worth seeing up close
       const wrap = video.parentElement;
-      if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().then(() => setTimeout(redrawAllBoxes, 120));
+      if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().then(() => setTimeout(redrawAllBoxes, 300));
       else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
     });
   });
@@ -386,7 +392,19 @@ function drawBoxes(camId, overlay, video) {
   const reading = state.detections.get(camId);
   const boxes = (reading && reading.boxes) || [];
 
-  if (!boxes.length || !state.showOverlay) { overlay.innerHTML = ''; return; }
+  if (!state.showOverlay) { overlay.innerHTML = ''; return; }
+
+  if (!boxes.length) {
+    // Detection follows whichever camera is playing, so a card that has none
+    // should say so rather than look broken
+    const waiting = state.focusId === camId;
+    overlay.innerHTML = state.playing.includes(camId)
+      ? `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
+           ${waiting ? 'กำลังเริ่มตรวจจับ...' : 'ยังไม่ได้ตรวจจับกล้องนี้'}
+         </div>`
+      : '';
+    return;
+  }
 
   const r = pictureRect(video);
   const age = Math.round(Date.now() / 1000 - reading.at);
@@ -840,6 +858,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   window.addEventListener('resize', () => redrawAllBoxes());
+  // Entering or leaving fullscreen changes the picture's rect, and Safari does
+  // not always fire resize for it
+  document.addEventListener('fullscreenchange', () => setTimeout(redrawAllBoxes, 200));
+  document.addEventListener('webkitfullscreenchange', () => setTimeout(redrawAllBoxes, 200));
 
   const boxes = el('btn-boxes');
   if (boxes) boxes.addEventListener('click', toggleBoxes);
