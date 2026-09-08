@@ -16,7 +16,7 @@ The web server proxies these at /api/detections and /api/detect-frame/<id>.
 """
 
 import argparse
-import io
+
 import json
 import subprocess
 import threading
@@ -76,14 +76,17 @@ def grab_frame(hls_url, timeout=25):
 
 # --- Detection -------------------------------------------------------------
 
-def detect(model, jpeg_bytes, confidence):
+def detect(model, jpeg_bytes, confidence, imgsz=1280):
     import numpy as np
 
     frame = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype="uint8"), cv2.IMREAD_COLOR)
     if frame is None:
         raise RuntimeError("could not decode frame")
 
-    result = model.predict(frame, conf=confidence, verbose=False)[0]
+    # These are traffic cameras looking down a street, so the vehicles are small.
+    # Inferring at 1280 rather than the default 640 roughly doubles what is found;
+    # yolov8n missed almost everything, so the small model is the floor here.
+    result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
 
     counts = {}
     total = 0
@@ -112,12 +115,12 @@ def detect(model, jpeg_bytes, confidence):
 
 # --- Sweep loop ------------------------------------------------------------
 
-def sweep(model, cameras, confidence):
+def sweep(model, cameras, confidence, imgsz):
     for cam in cameras:
         cam_id = cam["id"]
         started = time.time()
         try:
-            counts, total, annotated = detect(model, grab_frame(cam["hls"]), confidence)
+            counts, total, annotated = detect(model, grab_frame(cam["hls"]), confidence, imgsz)
             reading = {
                 "id": cam_id,
                 "title": cam["title"],
@@ -144,7 +147,7 @@ def sweep(model, cameras, confidence):
                 }
 
 
-def loop(site, interval, confidence, weights):
+def loop(site, interval, confidence, weights, imgsz):
     print(f"Loading {weights} ...", flush=True)
     model = YOLO(weights)
     state["model"] = weights
@@ -158,7 +161,7 @@ def loop(site, interval, confidence, weights):
                 with lock:
                     state["cameras"] = cameras
                     state["error"] = None
-            sweep(model, state["cameras"], confidence)
+            sweep(model, state["cameras"], confidence, imgsz)
             state["sweeps"] += 1
 
             seen = [d for d in state["detections"].values() if d["total"] is not None]
@@ -237,13 +240,14 @@ def main():
     ap.add_argument("--site", default="http://127.0.0.1:3000", help="where to read the camera list from")
     ap.add_argument("--port", type=int, default=5056)
     ap.add_argument("--interval", type=int, default=60, help="seconds between sweeps")
-    ap.add_argument("--conf", type=float, default=0.35)
-    ap.add_argument("--weights", default="yolov8n.pt")
+    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--weights", default="yolov8s.pt")
+    ap.add_argument("--imgsz", type=int, default=1280)
     args = ap.parse_args()
 
     threading.Thread(
         target=loop,
-        args=(args.site, args.interval, args.conf, args.weights),
+        args=(args.site, args.interval, args.conf, args.weights, args.imgsz),
         daemon=True,
     ).start()
 
