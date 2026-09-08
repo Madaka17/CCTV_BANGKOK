@@ -1,3 +1,9 @@
 .venv
 node_modules
 *.py
+
+# Root duplicates of public/index.html and public/js/app.js.
+# app.js is browser code - if Vercel uploads it, its zero-config detection
+# picks it as the server entrypoint and it crashes on `document is not defined`.
+/app.js
+/index.html
