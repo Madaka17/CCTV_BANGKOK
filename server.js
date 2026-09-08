@@ -575,16 +575,45 @@ const MIME_TYPES = {
 };
 
 // Frames published to Vercel Blob by publisher/publish-frames.js, for when the
-// BMA site cannot be reached from here. Set BLOB_BASE_URL on the Vercel project.
-const BLOB_BASE_URL = (process.env.BLOB_BASE_URL || '').replace(/\/+$/, '');
+// BMA site cannot be reached from here.
+//
+// Connecting a Blob store to the project puts BLOB_READ_WRITE_TOKEN in the
+// environment, and the store id sits inside it, so the public origin can be
+// worked out without anyone setting a second variable by hand. BLOB_BASE_URL
+// still wins if it is set.
+function deriveBlobBaseUrl() {
+  const explicit = (process.env.BLOB_BASE_URL || '').replace(/\/+$/, '');
+  if (explicit) return explicit;
+
+  const match = (process.env.BLOB_READ_WRITE_TOKEN || '').match(/^vercel_blob_rw_([A-Za-z0-9]+)_/);
+  return match ? `https://${match[1].toLowerCase()}.public.blob.vercel-storage.com` : null;
+}
+
+const BLOB_BASE_URL = deriveBlobBaseUrl();
 const blobFrameUrl = (cameraId) =>
   BLOB_BASE_URL ? `${BLOB_BASE_URL}/frames/${encodeURIComponent(cameraId)}.jpg` : null;
+
+// A derived origin is a guess until something has actually been published to
+// it, so confirm by reading the manifest the publisher writes each sweep.
+let publishedProbe = { ok: false, checkedAt: 0 };
+async function probePublished() {
+  if (!BLOB_BASE_URL) return false;
+  if (Date.now() - publishedProbe.checkedAt < 5 * 60 * 1000) return publishedProbe.ok;
+
+  try {
+    const r = await fetch(`${BLOB_BASE_URL}/frames/manifest.json`, { signal: AbortSignal.timeout(8000) });
+    publishedProbe = { ok: r.ok, checkedAt: Date.now() };
+  } catch (err) {
+    publishedProbe = { ok: false, checkedAt: Date.now() };
+  }
+  return publishedProbe.ok;
+}
 
 // Where frames come from right now: straight from BMA, from the published
 // snapshots, or nowhere.
 async function frameSource() {
   if ((await probeUpstream()) === 'ok') return 'live';
-  return BLOB_BASE_URL ? 'published' : 'none';
+  return (await probePublished()) ? 'published' : 'none';
 }
 
 // Is the BMA site reachable from here? Its Cloudflare edge answers datacenter
@@ -635,7 +664,7 @@ function sendPlaceholder(res) {
 async function servePublishedFrame(cameraId, res) {
   const url = blobFrameUrl(cameraId);
   if (!url) return false;
-  if ((await probeUpstream()) === 'ok') return false;
+  if ((await frameSource()) !== 'published') return false;
 
   res.writeHead(302, {
     'Location': url,
@@ -650,7 +679,7 @@ async function servePublishedFrame(cameraId, res) {
 async function fetchPublishedFrame(cameraId) {
   const url = blobFrameUrl(cameraId);
   if (!url) return null;
-  if ((await probeUpstream()) === 'ok') return null;
+  if ((await frameSource()) !== 'published') return null;
 
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });

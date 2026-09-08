@@ -204,8 +204,9 @@ async function main() {
   const baseUrl = manifestUrl.replace(/\/frames\/manifest\.json$/, '');
   if (!DRY_RUN) {
     console.log('');
-    console.log('Set this on the Vercel project (Settings -> Environment Variables), then redeploy:');
-    console.log(`  BLOB_BASE_URL=${baseUrl}`);
+    console.log(`Frames are live at ${baseUrl}/frames/<id>.jpg`);
+    console.log('The deployed site works this URL out from BLOB_READ_WRITE_TOKEN on its own.');
+    console.log(`If it ever cannot, set BLOB_BASE_URL=${baseUrl} on the Vercel project.`);
     console.log('');
   }
 

@@ -38,23 +38,27 @@ BLOB_READ_WRITE_TOKEN=vercel_blob_rw_xxxxxxxxxxxx
 npm install
 ```
 
-**4. รันรอบแรก แล้วเอา URL ไปตั้งบน Vercel**
+**4. รันรอบแรก**
 
 ```sh
 npm run publish:once
 ```
 
-จบแล้วสคริปต์จะพิมพ์บรรทัดแบบนี้ออกมา:
+เท่านี้จบ ไม่ต้องตั้ง env เพิ่มบน Vercel — พอผูก Blob store เข้ากับโปรเจกต์แล้ว Vercel
+จะใส่ `BLOB_READ_WRITE_TOKEN` ให้เอง และเซิร์ฟเวอร์อ่าน store id จาก token นั้น
+เพื่อประกอบ URL สาธารณะเอง แล้วยืนยันด้วยการลองอ่าน `frames/manifest.json` จริง
 
+เช็คว่าต่อติดแล้ว:
+
+```sh
+curl https://cctv-bangkok.vercel.app/api/config
 ```
-Set this on the Vercel project (Settings -> Environment Variables), then redeploy:
-  BLOB_BASE_URL=https://xxxxxxxx.public.blob.vercel-storage.com
-```
 
-เอาไปใส่ที่ Vercel dashboard → **Settings** → **Environment Variables**
-(ชื่อ `BLOB_BASE_URL`, เลือกครบทั้ง Production/Preview/Development) แล้ว **Redeploy** หนึ่งครั้ง
+ต้องเห็น `"frames":"published"` เว็บจะขึ้นแถบสีฟ้าบอกว่าเป็นภาพจากคลังภาพ
+และดึงรูปจาก Blob CDN โดยตรง
 
-เสร็จแล้วเว็บจะขึ้นแถบสีฟ้าบอกว่าเป็นภาพจากคลังภาพ และดึงรูปจาก Blob CDN โดยตรง
+> ถ้าด้วยเหตุใดก็ตามหา URL เองไม่ได้ ตั้ง `BLOB_BASE_URL` บน Vercel เองได้
+> (Settings → Environment Variables) ค่าที่ต้องใส่จะถูกพิมพ์ออกมาตอนรัน `publish:once`
 
 ## ใช้งานประจำวัน
 
@@ -124,5 +128,7 @@ npm run publish:frames      # วนดึงทุก 30 วิ ปล่อย
 
 - ขึ้น `no session cookie ... challenged by Cloudflare` → เครื่องนี้โดน Cloudflare กั้นแล้ว
   ลองเปิด https://cpudapp.bangkok.go.th/bmatraffic/index.aspx ในเบราว์เซอร์ก่อน
-- ดึงได้ครบแต่เว็บยังไม่ขึ้นภาพ → เช็คว่าตั้ง `BLOB_BASE_URL` บน Vercel แล้ว redeploy หรือยัง
-  ดูได้จาก `curl https://cctv-bangkok.vercel.app/api/config` ต้องเห็น `"frames":"published"`
+- ดึงได้ครบแต่เว็บยังไม่ขึ้นภาพ → `curl https://cctv-bangkok.vercel.app/api/config`
+  - `"frames":"none"` แปลว่าเซิร์ฟเวอร์อ่าน `frames/manifest.json` บน Blob ไม่ได้
+    เช็คว่า Blob store ผูกกับโปรเจกต์นี้จริง (Storage → store → Projects) แล้ว redeploy
+  - ถ้ายังไม่หาย ตั้ง `BLOB_BASE_URL` เองตามค่าที่ `publish:once` พิมพ์ออกมา
