@@ -1358,7 +1358,7 @@ const requestHandler = async (req, res) => {
           res.writeHead(404);
           res.end('Not Found');
         } else {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
           res.end(content);
         }
       });
@@ -1368,7 +1368,15 @@ const requestHandler = async (req, res) => {
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
-    res.writeHead(200, { 'Content-Type': contentType });
+    // The page and its code change often, and without this browsers cache them
+    // heuristically - which is why edits kept appearing not to take effect.
+    // Images and fonts are fine to hold on to.
+    const revalidate = ['.html', '.js', '.css', '.json'].includes(ext);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': revalidate ? 'no-cache' : 'public, max-age=3600',
+      'Last-Modified': stats.mtime.toUTCString()
+    });
     fs.createReadStream(filePath).pipe(res);
   });
 };

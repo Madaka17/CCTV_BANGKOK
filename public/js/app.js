@@ -391,8 +391,10 @@ function drawBoxes(camId, overlay, video) {
   const r = pictureRect(video);
   const age = Math.round(Date.now() / 1000 - reading.at);
 
+  // Inline styles rather than utility classes: this markup is injected after
+  // load, and positioning the overlay must not depend on a CDN picking it up.
   overlay.innerHTML = `
-    <svg class="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none">
+    <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" preserveAspectRatio="none">
       ${boxes.map(b => {
         const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
         const w = b.w * r.w, h = b.h * r.h;
@@ -401,8 +403,8 @@ function drawBoxes(camId, overlay, video) {
                  fill="none" stroke="${c}" stroke-width="2" rx="2" />`;
       }).join('')}
     </svg>
-    <div class="absolute bottom-2 left-2 px-2 py-1 rounded-lg bg-black/70 text-[10px] text-white">
-      ${boxes.length} คัน · ตรวจเมื่อ ${age < 60 ? age + ' วิ' : Math.round(age / 60) + ' นาที'}ที่แล้ว
+    <div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#fff;font-size:10px">
+      ${boxes.length} คัน · ${age < 3 ? 'สด' : 'ตรวจเมื่อ ' + (age < 60 ? age + ' วิ' : Math.round(age / 60) + ' นาที') + 'ที่แล้ว'}
     </div>`;
 }
 
