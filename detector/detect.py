@@ -89,7 +89,10 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
     result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
 
     counts = {}
+    boxes = []
     total = 0
+    height, width = frame.shape[:2]
+
     for box in result.boxes:
         cls = int(box.cls[0])
         if cls not in VEHICLES:
@@ -99,6 +102,16 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
         total += 1
 
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+        # Normalised, so the page can lay them over a video of any size
+        boxes.append({
+            "k": name,
+            "c": round(float(box.conf[0]), 2),
+            "x": round(x1 / width, 4),
+            "y": round(y1 / height, 4),
+            "w": round((x2 - x1) / width, 4),
+            "h": round((y2 - y1) / height, 4),
+        })
+
         colour = BOX_COLOURS[cls]
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
         label = f"{name} {float(box.conf[0]):.2f}"
@@ -110,7 +123,7 @@ def detect(model, jpeg_bytes, confidence, imgsz=1280):
     cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-    return counts, total, (buf.tobytes() if ok else None)
+    return counts, total, (buf.tobytes() if ok else None), boxes
 
 
 # --- Sweep loop ------------------------------------------------------------
@@ -120,12 +133,13 @@ def sweep(model, cameras, confidence, imgsz):
         cam_id = cam["id"]
         started = time.time()
         try:
-            counts, total, annotated = detect(model, grab_frame(cam["hls"]), confidence, imgsz)
+            counts, total, annotated, boxes = detect(model, grab_frame(cam["hls"]), confidence, imgsz)
             reading = {
                 "id": cam_id,
                 "title": cam["title"],
                 "total": total,
                 "counts": counts,
+                "boxes": boxes,
                 "at": time.time(),
                 "ms": int((time.time() - started) * 1000),
                 "error": None,
@@ -141,6 +155,7 @@ def sweep(model, cameras, confidence, imgsz):
                     "title": cam["title"],
                     "total": None,
                     "counts": {},
+                    "boxes": [],
                     "at": time.time(),
                     "ms": int((time.time() - started) * 1000),
                     "error": str(exc)[:150],

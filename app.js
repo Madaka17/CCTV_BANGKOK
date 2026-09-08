@@ -12,6 +12,7 @@ const state = {
   view: 'cams',
   detections: new Map(), // camera id -> reading
   showBoxes: false,
+  showOverlay: localStorage.getItem('showOverlay') !== '0',
   // Measured against these servers: eight parallel fetches shared 2.5 Mbps in
   // total, while the streams themselves run 0.3-6.8 Mbps each. Playing all
   // nineteen at once cannot work, so only a few run at a time.
@@ -88,6 +89,7 @@ function render() {
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
         </button>
 
+        <div id="o-${cssId(cam.id)}" class="absolute inset-0 pointer-events-none"></div>
         <img id="b-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain hidden" alt="" />
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
@@ -123,7 +125,10 @@ function render() {
     btn.addEventListener('click', () => {
       const video = el('v-' + btn.dataset.fullscreen);
       if (!video) return;
-      if (video.requestFullscreen) video.requestFullscreen();
+      // Fullscreen the wrapper, not the video: a bare video element drops the
+      // box overlay, which is the thing worth seeing up close
+      const wrap = video.parentElement;
+      if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().then(() => setTimeout(redrawAllBoxes, 120));
       else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
     });
   });
@@ -147,7 +152,11 @@ function attachPlayer(cam, prefix = 'v-') {
   const key = prefix === 'v-' ? cam.id : 'popup:' + cam.id;
 
   const say = (text) => { if (msg) msg.textContent = text; };
-  video.addEventListener('playing', () => say(''));
+  video.addEventListener('playing', () => {
+    say('');
+    drawBoxes(cam.id, el('o-' + cssId(cam.id)), video);
+  });
+  video.addEventListener('loadedmetadata', () => drawBoxes(cam.id, el('o-' + cssId(cam.id)), video));
 
   // Safari plays HLS itself; everything else needs hls.js
   if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -293,6 +302,7 @@ async function loadDetections() {
     }
 
     if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
+    redrawAllBoxes();
 
     list.forEach(d => {
       const box = el('c-' + cssId(d.id));
@@ -344,6 +354,59 @@ function refreshBoxImages() {
     const img = el('b-' + cssId(cam.id));
     if (img) img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
   });
+}
+
+// --- Box overlay -----------------------------------------------------------
+//
+// The detector reports boxes in fractions of the frame, so they can be laid
+// over a video of any size. The video is object-contain, so the picture is
+// letterboxed inside its element and the boxes have to follow the picture,
+// not the element.
+
+const BOX_COLOURS = { car: '#54C00C', motorcycle: '#FEDE04', bus: '#FF9020', truck: '#FF3030' };
+
+function pictureRect(video) {
+  const ew = video.clientWidth, eh = video.clientHeight;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return { x: 0, y: 0, w: ew, h: eh };
+
+  const scale = Math.min(ew / vw, eh / vh);
+  const w = vw * scale, h = vh * scale;
+  return { x: (ew - w) / 2, y: (eh - h) / 2, w, h };
+}
+
+function drawBoxes(camId, overlay, video) {
+  if (!overlay) return;
+  const reading = state.detections.get(camId);
+  const boxes = (reading && reading.boxes) || [];
+
+  if (!boxes.length || !state.showOverlay) { overlay.innerHTML = ''; return; }
+
+  const r = pictureRect(video);
+  const age = Math.round(Date.now() / 1000 - reading.at);
+
+  overlay.innerHTML = `
+    <svg class="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none">
+      ${boxes.map(b => {
+        const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
+        const w = b.w * r.w, h = b.h * r.h;
+        const c = BOX_COLOURS[b.k] || '#54C00C';
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"
+                 fill="none" stroke="${c}" stroke-width="2" rx="2" />`;
+      }).join('')}
+    </svg>
+    <div class="absolute bottom-2 left-2 px-2 py-1 rounded-lg bg-black/70 text-[10px] text-white">
+      ${boxes.length} คัน · ตรวจเมื่อ ${age < 60 ? age + ' วิ' : Math.round(age / 60) + ' นาที'}ที่แล้ว
+    </div>`;
+}
+
+function redrawAllBoxes() {
+  state.playing.forEach(id => {
+    drawBoxes(id, el('o-' + cssId(id)), el('v-' + cssId(id)));
+  });
+  if (state.detail && state.detailMode === 'live') {
+    drawBoxes(state.detail.id, el('detail-overlay'), el('detail-video'));
+  }
 }
 
 // --- Camera detail ---------------------------------------------------------
@@ -404,6 +467,8 @@ function renderDetail(imageOnly = false) {
   if (state.detailMode === 'det') {
     img.classList.remove('hidden');
     video.classList.add('hidden');
+    const ov = el('detail-overlay');
+    if (ov) ov.innerHTML = '';
 
     const hls = state.players.get('detail');
     if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
@@ -423,6 +488,8 @@ function renderDetail(imageOnly = false) {
     video.classList.remove('hidden');
     msg.textContent = '';
     attachDetailPlayer(cam, video, msg);
+    video.addEventListener('loadedmetadata', () => drawBoxes(cam.id, el('detail-overlay'), video), { once: true });
+    setTimeout(() => drawBoxes(cam.id, el('detail-overlay'), video), 400);
   }
 
   if (imageOnly) return;
@@ -674,6 +741,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   updatePlayingBadge();
+
+  const overlayBtn = el('btn-overlay');
+  if (overlayBtn) {
+    const paint = () => {
+      overlayBtn.textContent = state.showOverlay ? 'ซ่อนกรอบ' : 'แสดงกรอบ';
+      overlayBtn.classList.toggle('bg-rose-600', state.showOverlay);
+      overlayBtn.classList.toggle('text-white', state.showOverlay);
+    };
+    paint();
+    overlayBtn.addEventListener('click', () => {
+      state.showOverlay = !state.showOverlay;
+      localStorage.setItem('showOverlay', state.showOverlay ? '1' : '0');
+      paint();
+      redrawAllBoxes();
+    });
+  }
+  window.addEventListener('resize', () => redrawAllBoxes());
 
   const boxes = el('btn-boxes');
   if (boxes) boxes.addEventListener('click', toggleBoxes);
