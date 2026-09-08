@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "share": "node tunnel/share.js",
     "py": "python3 server.py",
     "log:traffic": "node logger/log-traffic.js",
     "log:once": "node logger/log-traffic.js --once"

@@ -9,3 +9,4 @@ detector/.venv/
 detector/weights/
 __pycache__/
 *.pyc
+tunnel/current-url.txt
