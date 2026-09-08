@@ -26,6 +26,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
+import numpy as np
 from ultralytics import YOLO
 
 # COCO classes that are vehicles, and what to call them in Thai
@@ -164,7 +165,181 @@ JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
 
 
+class FlowTracker:
+    """Boxes that follow the traffic between detections.
+
+    Detection is far slower than the stream, so boxes from the last YOLO pass
+    are already wrong by the time they are drawn. Between passes this carries
+    each box along with the picture using dense optical flow, and every few
+    frames a fresh detection is matched back onto the tracks by IoU.
+
+    Adapted from the Track+DIS script: same idea, same DIS ULTRAFAST estimator,
+    with the flow computed at half resolution because it is the expensive part.
+    """
+
+    # The Track+DIS defaults assume a 25 fps file, where five frames is 0.2s and
+    # a box barely moves. Here the stream runs nearer 5 fps, so those numbers let
+    # unmatched tracks coast for six seconds and the count filled up with ghosts:
+    # 110 vehicles where YOLO saw 50. Detect more often, forget faster, and match
+    # a little more loosely.
+    def __init__(self, iou_threshold=0.2, max_age=4, redetect_every=3, flow_scale=0.5):
+        self.iou_threshold = iou_threshold
+        self.max_age = max_age
+        self.redetect_every = redetect_every
+        self.flow_scale = flow_scale
+        self.flow = cv2.DISOpticalFlow.create(
+            getattr(cv2.DISOpticalFlow, "PRESET_ULTRAFAST", 0)
+        )
+        self.reset()
+
+    def reset(self):
+        self.prev_gray = None
+        self.tracks = {}
+        self.next_id = 0
+        self.frames = 0
+
+    @staticmethod
+    def _iou(a, b):
+        x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+        x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        if not inter:
+            return 0.0
+        union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+        return inter / union if union else 0.0
+
+    def _small_gray(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.flow_scale == 1:
+            return gray
+        return cv2.resize(gray, None, fx=self.flow_scale, fy=self.flow_scale)
+
+    def _propagate(self, gray):
+        """Move every track by the flow under its centre."""
+        if self.prev_gray is None or not self.tracks:
+            return {}
+
+        flow = self.flow.calc(self.prev_gray, gray, None)
+        fh, fw = flow.shape[:2]
+        scale = 1.0 / self.flow_scale
+        moved = {}
+
+        for tid, t in self.tracks.items():
+            x1, y1, x2, y2 = t["bbox"]
+            cx = int((x1 + x2) / 2 * self.flow_scale)
+            cy = int((y1 + y2) / 2 * self.flow_scale)
+            if not (0 <= cy < fh and 0 <= cx < fw):
+                continue  # left the picture
+
+            du, dv = flow[cy, cx] * scale
+            moved[tid] = {
+                **t,
+                "bbox": [int(x1 + du), int(y1 + dv), int(x2 + du), int(y2 + dv)],
+                "age": t["age"] + 1,
+            }
+        return moved
+
+    def _match(self, moved, detections):
+        """Fresh detections win; unmatched tracks coast until they age out."""
+        result = {}
+        taken = set()
+
+        for tid, t in moved.items():
+            best_iou, best = 0.0, -1
+            for i, det in enumerate(detections):
+                if i in taken:
+                    continue
+                iou = self._iou(t["bbox"], det["bbox"])
+                if iou > best_iou:
+                    best_iou, best = iou, i
+
+            if best_iou >= self.iou_threshold:
+                det = detections[best]
+                taken.add(best)
+                result[tid] = {"bbox": det["bbox"], "name": det["name"],
+                               "conf": det["conf"], "age": 0}
+            elif t["age"] < self.max_age:
+                result[tid] = t
+
+        for i, det in enumerate(detections):
+            if i in taken:
+                continue
+            result[self.next_id] = {"bbox": det["bbox"], "name": det["name"],
+                                    "conf": det["conf"], "age": 0}
+            self.next_id += 1
+
+        return result
+
+    def update(self, frame, detect_fn):
+        """One frame in, the current tracks out."""
+        gray = self._small_gray(frame)
+        moved = self._propagate(gray)
+
+        due = self.frames % self.redetect_every == 0 or not self.tracks
+        detections = detect_fn(frame) if due else []
+
+        if detections or due:
+            self.tracks = self._match(moved, detections)
+        else:
+            self.tracks = {tid: t for tid, t in moved.items() if t["age"] < self.max_age}
+
+        self.prev_gray = gray
+        self.frames += 1
+        return self.tracks, due
+
+
+TRACK_COLOURS = [(80, 200, 12), (4, 222, 254), (255, 120, 20), (32, 32, 255),
+                 (255, 80, 200), (240, 200, 40), (120, 255, 255)]
+
+
+def draw_tracks(frame, tracks):
+    for tid, t in tracks.items():
+        x1, y1, x2, y2 = t["bbox"]
+        colour = TRACK_COLOURS[tid % len(TRACK_COLOURS)]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+        label = f"#{tid} {t['name']}"
+        cv2.rectangle(frame, (x1, y1 - 16), (x1 + 8 * len(label), y1), colour, -1)
+        cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+
+    banner = f"{len(tracks)} vehicles"
+    cv2.rectangle(frame, (8, 8), (8 + 11 * len(banner), 34), (0, 0, 0), -1)
+    cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return frame
+
+
+def tracks_to_reading(cam, tracks, width, height):
+    counts = {}
+    boxes = []
+    for tid, t in tracks.items():
+        counts[t["name"]] = counts.get(t["name"], 0) + 1
+        x1, y1, x2, y2 = t["bbox"]
+        boxes.append({
+            "id": tid, "k": t["name"], "c": round(t["conf"], 2),
+            "x": round(x1 / width, 4), "y": round(y1 / height, 4),
+            "w": round((x2 - x1) / width, 4), "h": round((y2 - y1) / height, 4),
+        })
+    return {
+        "id": cam["id"], "title": cam["title"], "total": len(tracks),
+        "counts": counts, "boxes": boxes, "at": time.time(),
+        "ms": 0, "error": None, "live": True,
+    }
+
+
 def focus_worker(model, confidence, imgsz, fps, site):
+    tracker = FlowTracker()
+
+    def run_yolo(frame):
+        result = model.predict(frame, imgsz=imgsz, conf=confidence, verbose=False)[0]
+        out = []
+        for box in result.boxes:
+            cls = int(box.cls[0])
+            if cls not in VEHICLES:
+                continue
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            out.append({"bbox": [x1, y1, x2, y2], "name": VEHICLES[cls][0],
+                        "conf": float(box.conf[0])})
+        return out
+
     while True:
         with lock:
             cam_id = state["focus"] if time.time() < state["focus_until"] else None
@@ -175,6 +350,7 @@ def focus_worker(model, confidence, imgsz, fps, site):
             time.sleep(0.5)
             continue
 
+        tracker.reset()
         proc = subprocess.Popen(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -201,36 +377,58 @@ def focus_worker(model, confidence, imgsz, fps, site):
                     break
                 buf += chunk
 
-                # Keep only the newest complete frame: detection is slower than
-                # the stream, and showing the freshest is the whole point
-                end = buf.rfind(JPEG_EOI)
-                if end == -1:
+                # Optical flow needs consecutive frames, so take them in order.
+                # If more than a couple have piled up we are behind: skip to the
+                # newest and start the flow again from there.
+                starts = [i for i in _jpeg_starts(buf)]
+                end_i = buf.rfind(JPEG_EOI)
+                if end_i == -1 or not starts:
                     continue
-                start = buf.rfind(JPEG_SOI, 0, end)
-                if start == -1:
+
+                pending = [i for i in starts if i < end_i]
+                if len(pending) > 2:
+                    tracker.reset()
+                    take = pending[-1]
+                else:
+                    take = pending[0]
+
+                nxt = next((i for i in starts if i > take), None)
+                jpeg = buf[take:nxt] if nxt is not None else buf[take:end_i + 2]
+                buf = buf[(nxt if nxt is not None else end_i + 2):]
+
+                frame = cv2.imdecode(np.frombuffer(jpeg, dtype="uint8"), cv2.IMREAD_COLOR)
+                if frame is None:
                     continue
-                jpeg, buf = buf[start:end + 2], buf[end + 2:]
 
                 try:
-                    counts, total, annotated, boxes = detect(model, jpeg, confidence, imgsz)
+                    tracks, redetected = tracker.update(frame, run_yolo)
                 except Exception:
+                    tracker.reset()
                     continue
+
+                height, width = frame.shape[:2]
+                annotated = draw_tracks(frame, tracks)
+                ok, encoded = cv2.imencode(".jpg", annotated,
+                                           [int(cv2.IMWRITE_JPEG_QUALITY), 75])
 
                 frames += 1
                 with lock:
-                    state["detections"][cam["id"]] = {
-                        "id": cam["id"], "title": cam["title"], "total": total,
-                        "counts": counts, "boxes": boxes, "at": time.time(),
-                        "ms": 0, "error": None, "live": True,
-                    }
-                    if annotated:
-                        state["frames"][cam["id"]] = annotated
+                    state["detections"][cam["id"]] = tracks_to_reading(cam, tracks, width, height)
+                    if ok:
+                        state["frames"][cam["id"]] = encoded.tobytes()
                     state["focus_fps"] = round(frames / max(1e-6, time.time() - started), 2)
         finally:
             proc.kill()
             proc.wait(timeout=5)
             state["focus_fps"] = 0.0
             print(f"focus released {cam['id']} after {frames} frames", flush=True)
+
+
+def _jpeg_starts(buf):
+    i = buf.find(JPEG_SOI)
+    while i != -1:
+        yield i
+        i = buf.find(JPEG_SOI, i + 2)
 
 
 # --- Sweep loop ------------------------------------------------------------
@@ -410,7 +608,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--site", default="http://127.0.0.1:3000", help="where to read the camera list from")
     ap.add_argument("--port", type=int, default=5056)
-    ap.add_argument("--interval", type=int, default=60, help="seconds between sweeps")
+    ap.add_argument("--interval", type=int, default=0,
+                    help="seconds between all-camera sweeps; 0 disables them")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--weights", default="yolov8s.pt")
     ap.add_argument("--imgsz", type=int, default=1280)

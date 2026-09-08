@@ -399,8 +399,14 @@ function drawBoxes(camId, overlay, video) {
         const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
         const w = b.w * r.w, h = b.h * r.h;
         const c = BOX_COLOURS[b.k] || '#54C00C';
+        // The id comes from the tracker, so the same vehicle keeps its number
+        // from frame to frame - which is what shows the tracking is working
+        const tag = b.id === undefined ? '' :
+          `<text x="${(x + 2).toFixed(1)}" y="${(y - 3).toFixed(1)}" fill="${c}"
+                 font-size="11" font-family="monospace"
+                 style="paint-order:stroke;stroke:#000;stroke-width:3">#${b.id}</text>`;
         return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"
-                 fill="none" stroke="${c}" stroke-width="2" rx="2" />`;
+                 fill="none" stroke="${c}" stroke-width="2" rx="2" />${tag}`;
       }).join('')}
     </svg>
     <div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#fff;font-size:10px">
