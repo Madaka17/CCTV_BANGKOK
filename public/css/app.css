@@ -8,14 +8,24 @@
   height: 7px;
 }
 ::-webkit-scrollbar-track {
-  background: #090d16;
+  background: #e2e8f0;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #94a3b8;
   border-radius: 9999px;
-  border: 1px solid #0f172a;
 }
 ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: #090d16;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border: 1px solid #0f172a;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
 
@@ -36,10 +46,17 @@
 }
 
 .glass-nav {
-  background: rgba(11, 15, 25, 0.88);
+  background: rgba(248, 250, 252, 0.85);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(30, 41, 59, 0.8);
+  border-bottom: 1px solid rgba(203, 213, 225, 0.9);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.dark .glass-nav {
+  background: rgba(11, 15, 25, 0.88);
+  border-bottom-color: rgba(30, 41, 59, 0.8);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
 .glass-card {
@@ -72,9 +89,14 @@
 }
 
 .skeleton-loading {
-  background: linear-gradient(90deg, #0f172a 25%, #1e293b 50%, #0f172a 75%);
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
   background-size: 200% 100%;
   animation: shimmer 1.8s infinite;
+}
+
+.dark .skeleton-loading {
+  background: linear-gradient(90deg, #0f172a 25%, #1e293b 50%, #0f172a 75%);
+  background-size: 200% 100%;
 }
 
 /* --- Glow Effects --- */
@@ -185,16 +207,28 @@
 
 /* --- Modern Mapbox Popup Styling --- */
 .maplibregl-popup-content, .mapboxgl-popup-content {
-  background: #090d16 !important;
-  color: #f8fafc !important;
-  border: 1px solid #334155 !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
   border-radius: 20px !important;
-  box-shadow: 0 25px 40px -10px rgba(0, 0, 0, 0.85), 0 0 15px rgba(244, 63, 94, 0.15) !important;
+  box-shadow: 0 25px 40px -10px rgba(15, 23, 42, 0.25) !important;
   padding: 14px !important;
   backdrop-filter: blur(12px) !important;
 }
 
 .maplibregl-popup-tip, .mapboxgl-popup-tip {
+  border-top-color: #ffffff !important;
+  border-bottom-color: #ffffff !important;
+}
+
+.dark .maplibregl-popup-content, .dark .mapboxgl-popup-content {
+  background: #090d16 !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+  box-shadow: 0 25px 40px -10px rgba(0, 0, 0, 0.85), 0 0 15px rgba(244, 63, 94, 0.15) !important;
+}
+
+.dark .maplibregl-popup-tip, .dark .mapboxgl-popup-tip {
   border-top-color: #090d16 !important;
   border-bottom-color: #090d16 !important;
 }
@@ -248,4 +282,163 @@
 }
 .live-pulse-dot {
   animation: live-pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ============================================================================
+   Header controls
+   Written as components rather than utility strings because the same look is
+   applied from both index.html and app.js, and they must agree.
+   ============================================================================ */
+
+.view-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+  white-space: nowrap;
+}
+.view-tab:hover {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.85);
+}
+.view-tab.is-active {
+  color: #ffffff;
+  background: #e11d48;
+  box-shadow: 0 2px 8px rgba(225, 29, 72, 0.35);
+}
+.dark .view-tab {
+  color: #94a3b8;
+}
+.dark .view-tab:hover {
+  color: #ffffff;
+  background: rgba(30, 41, 59, 0.85);
+}
+.dark .view-tab.is-active {
+  color: #ffffff;
+  background: #e11d48;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+.icon-btn:hover {
+  color: #0f172a;
+  background: #ffffff;
+  border-color: #94a3b8;
+}
+.dark .icon-btn {
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.9);
+  border-color: #1e293b;
+}
+.dark .icon-btn:hover {
+  color: #ffffff;
+  background: #1e293b;
+  border-color: #334155;
+}
+
+/* Selects and secondary buttons in the toolbar share one height and radius so
+   the row reads as a single strip instead of a pile of odd shapes. */
+.ctl,
+.ctl-btn {
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+.ctl:hover,
+.ctl-btn:hover {
+  border-color: #94a3b8;
+}
+.ctl:focus-visible,
+.ctl-btn:focus-visible {
+  outline: 2px solid rgba(244, 63, 94, 0.6);
+  outline-offset: 1px;
+}
+.dark .ctl,
+.dark .ctl-btn {
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.9);
+  border-color: #1e293b;
+}
+.dark .ctl:hover,
+.dark .ctl-btn:hover {
+  border-color: #334155;
+}
+
+/* The two toggles turn rose when what they control is on */
+.ctl-btn.is-on,
+.dark .ctl-btn.is-on {
+  color: #ffffff;
+  background: #e11d48;
+  border-color: #e11d48;
+}
+
+/* Card surface, light and dark. .camera-card already carried the hover lift. */
+.camera-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.camera-card:hover {
+  box-shadow: 0 20px 30px -12px rgba(15, 23, 42, 0.22),
+              0 0 20px -6px rgba(244, 63, 94, 0.18);
+}
+.dark .camera-card {
+  background: #0f172a;
+  border-color: #1e293b;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+}
+.dark .camera-card:hover {
+  box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.6),
+              0 0 25px -5px rgba(244, 63, 94, 0.15);
+}
+
+/* Hide the browser's own search-field clear button; the toolbar draws its own */
+#search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* No camera toolbar while the map is up - none of it applies there */
+body.view-map #toolbar {
+  display: none;
+}
+
+/* Amber-on-amber was written for the dark page only; on the light one it
+   washed out, so the two themes now carry their own text colour. */
+.detector-notice {
+  padding: 10px 16px;
+  font-size: 12px;
+  text-align: center;
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+  color: #92400e;
+}
+.dark .detector-notice {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
 }

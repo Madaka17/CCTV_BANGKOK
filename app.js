@@ -39,20 +39,40 @@ const el = (id) => document.getElementById(id);
 
 async function loadCameras() {
   const grid = el('camera-grid');
-  grid.innerHTML = `<div class="col-span-full py-20 text-center text-slate-400 text-sm">กำลังโหลดกล้อง...</div>`;
+  setEmptyMessage('');
+  // Cards the size of the real ones, so the grid does not jump when they land
+  grid.innerHTML = Array.from({ length: 6 }, () => `
+    <div class="camera-card rounded-2xl overflow-hidden">
+      <div class="aspect-video skeleton-loading"></div>
+      <div class="p-3 space-y-2">
+        <div class="h-3.5 w-3/4 rounded skeleton-loading"></div>
+        <div class="h-2.5 w-1/3 rounded skeleton-loading"></div>
+      </div>
+    </div>`).join('');
 
   try {
     const res = await fetch('/api/video-cameras');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     state.cameras = data.cameras || [];
+    fillOrgFilter();
     if (state.view === 'map') { addCameraMarkers(); } else { render(); }
   } catch (err) {
-    grid.innerHTML = `
-      <div class="col-span-full py-20 text-center text-slate-400 text-sm">
-        โหลดรายการกล้องไม่สำเร็จ (${err.message})
-      </div>`;
+    grid.innerHTML = '';
+    setEmptyMessage(`โหลดรายการกล้องไม่สำเร็จ (${err.message})`);
   }
+}
+
+// The owning agencies are whatever the feed happens to carry, so read them off
+// the data rather than hard-coding iTIC and the highways department.
+function fillOrgFilter() {
+  const sel = el('org-filter');
+  if (!sel) return;
+  const orgs = [...new Set(state.cameras.map(c => c.org).filter(Boolean))].sort();
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">ทุกหน่วยงาน</option>' +
+    orgs.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+  if (orgs.includes(keep)) sel.value = keep;
 }
 
 // --- Rendering -------------------------------------------------------------
@@ -61,18 +81,23 @@ function render() {
   stopAllPlayers();
 
   const grid = el('camera-grid');
-  const count = el('camera-count');
-  if (count) count.textContent = `${state.cameras.length} กล้อง`;
 
   if (!state.cameras.length) {
-    grid.innerHTML = `<div class="col-span-full py-20 text-center text-slate-400 text-sm">ยังไม่มีกล้องที่พร้อมใช้งาน</div>`;
+    grid.innerHTML = '';
+    updateCameraCount(0);
+    setEmptyMessage('ยังไม่มีกล้องที่พร้อมใช้งาน');
     return;
   }
 
   grid.innerHTML = state.cameras.map(cam => `
-    <div data-cam-id="${escapeHtml(cam.id)}" class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col">
+    <div data-cam-id="${escapeHtml(cam.id)}"
+         data-search="${escapeHtml(((cam.title || '') + ' ' + (cam.org || '') + ' ' + cam.id).toLowerCase())}"
+         data-org="${escapeHtml(cam.org || '')}"
+         class="camera-card rounded-2xl overflow-hidden flex flex-col">
       <div class="relative bg-black aspect-video flex items-center justify-center">
-        <video id="v-${cssId(cam.id)}" class="w-full h-full object-contain" muted playsinline
+        <!-- Absolute, like the overlays below it: as a flow child a tall frame
+             stretches past the 16:9 box and the grid row goes ragged. -->
+        <video id="v-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain" muted playsinline
                poster="${cam.image || ''}"></video>
 
         <button data-play="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
@@ -97,13 +122,14 @@ function render() {
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
-      <div class="p-3 cursor-pointer hover:bg-slate-800/40 transition-colors" data-detail="${escapeHtml(cam.id)}">
-        <h2 class="text-sm font-semibold text-white leading-snug flex items-start gap-1.5">
-          <span class="flex-1">${escapeHtml(cam.title)}</span>
-          <svg class="w-4 h-4 text-slate-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-        </h2>
-        <p class="text-[11px] text-slate-500 mt-1">${escapeHtml(cam.org)}</p>
-        <p id="c-${cssId(cam.id)}" class="text-[11px] text-emerald-400 mt-1 font-medium"></p>
+      <div class="p-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors" data-detail="${escapeHtml(cam.id)}">
+        <h2 class="text-sm font-semibold leading-snug">${escapeHtml(cam.title)}</h2>
+        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">${escapeHtml(cam.org)}</p>
+        <p id="c-${cssId(cam.id)}" class="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium"></p>
+        <span class="inline-flex items-center gap-1 mt-2 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+          รายละเอียด
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </span>
       </div>
     </div>
   `).join('');
@@ -122,6 +148,7 @@ function render() {
     });
   });
 
+  applyFilter();
   watchVisibility();
 
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
@@ -249,6 +276,44 @@ function stopCamera(id) {
   refreshFocusTarget();
 }
 
+// --- Search and filter -----------------------------------------------------
+
+// Filtering hides cards instead of re-rendering the grid: a re-render tears
+// down every player, so a stream would die on each keystroke. The visibility
+// observer already stops a camera once its card is display:none, so hiding
+// also releases the connection for free.
+function applyFilter() {
+  const term = (el('search')?.value || '').trim().toLowerCase();
+  const org = el('org-filter')?.value || '';
+  const clear = el('search-clear');
+  if (clear) clear.classList.toggle('hidden', !term);
+
+  let shown = 0;
+  document.querySelectorAll('#camera-grid [data-cam-id]').forEach(card => {
+    const hit = (!term || card.dataset.search.includes(term)) &&
+                (!org || card.dataset.org === org);
+    card.classList.toggle('hidden', !hit);
+    if (hit) shown++;
+  });
+
+  updateCameraCount(shown);
+  setEmptyMessage(shown ? '' : 'ไม่พบกล้องที่ตรงกับคำค้น');
+}
+
+function updateCameraCount(shown) {
+  const count = el('camera-count');
+  if (!count) return;
+  const total = state.cameras.length;
+  count.textContent = shown === total ? `${total} กล้อง` : `${shown} จาก ${total} กล้อง`;
+}
+
+function setEmptyMessage(text) {
+  const box = el('grid-empty');
+  if (!box) return;
+  box.textContent = text;
+  box.classList.toggle('hidden', !text);
+}
+
 function updatePlayingBadge() {
   const b = el('playing-count');
   if (b) b.textContent = `เล่นอยู่ ${state.playing.length}/${state.maxPlaying}`;
@@ -346,7 +411,7 @@ function showDetectorNotice(off) {
 
   bar = document.createElement('div');
   bar.id = 'detector-notice';
-  bar.style.cssText = 'padding:10px 16px;background:rgba(245,158,11,.12);border-bottom:1px solid rgba(245,158,11,.4);color:#fcd34d;font-size:12px;text-align:center';
+  bar.className = 'detector-notice';
   bar.textContent = 'เว็บนี้ไม่มีการตรวจจับรถ — ตัวตรวจจับทำงานบนเครื่องที่รันเซิร์ฟเวอร์เท่านั้น เปิดที่ http://localhost:3000 เพื่อดูกรอบตรวจจับ';
   document.body.insertBefore(bar, document.body.firstChild);
 }
@@ -357,8 +422,7 @@ function toggleBoxes() {
   const btn = el('btn-boxes');
   if (btn) {
     btn.textContent = state.showBoxes ? 'ดูวิดีโอสด' : 'แสดงกรอบรถ';
-    btn.classList.toggle('bg-rose-600', state.showBoxes);
-    btn.classList.toggle('text-white', state.showBoxes);
+    btn.classList.toggle('is-on', state.showBoxes);
   }
 
   state.cameras.forEach(cam => {
@@ -564,10 +628,11 @@ function closeDetail() {
 function setDetailMode(mode) {
   if (!state.detail) return;
   state.detailMode = mode;
+  const idle = 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700';
   el('detail-tab-det').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
-    (mode === 'det' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700');
+    (mode === 'det' ? 'bg-rose-600 text-white' : idle);
   el('detail-tab-live').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
-    (mode === 'live' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700');
+    (mode === 'live' ? 'bg-rose-600 text-white' : idle);
   renderDetail();
 }
 
@@ -796,10 +861,10 @@ function switchView(view) {
   el('view-cams').classList.toggle('hidden', view !== 'cams');
   el('view-map').classList.toggle('hidden', view !== 'map');
 
-  const active = 'view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-md shadow-rose-600/30 cursor-pointer';
-  const idle = 'view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer';
-  el('tab-cams').className = view === 'cams' ? active : idle;
-  el('tab-map').className = view === 'map' ? active : idle;
+  el('tab-cams').classList.toggle('is-active', view === 'cams');
+  el('tab-map').classList.toggle('is-active', view === 'map');
+  // The search box and the play controls have nothing to act on in map view
+  document.body.classList.toggle('view-map', view === 'map');
 
   if (view === 'map') {
     // 19 grid players would keep streaming behind the map
@@ -849,6 +914,25 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btn) btn.addEventListener('click', loadCameras);
   el('tab-cams').addEventListener('click', () => switchView('cams'));
   el('tab-map').addEventListener('click', () => switchView('map'));
+  el('tab-cams').classList.add('is-active');
+
+  const search = el('search');
+  if (search) search.addEventListener('input', applyFilter);
+  const orgSel = el('org-filter');
+  if (orgSel) orgSel.addEventListener('change', applyFilter);
+  const searchClear = el('search-clear');
+  if (searchClear) searchClear.addEventListener('click', () => {
+    search.value = '';
+    search.focus();
+    applyFilter();
+  });
+
+  const theme = el('btn-theme');
+  if (theme) theme.addEventListener('click', () => {
+    // The inline script in <head> put the class there; this only flips it
+    const dark = document.documentElement.classList.toggle('dark');
+    localStorage.setItem('theme', dark ? 'dark' : 'light');
+  });
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
 
   el('detail-close').addEventListener('click', closeDetail);
@@ -874,8 +958,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (overlayBtn) {
     const paint = () => {
       overlayBtn.textContent = state.showOverlay ? 'ซ่อนกรอบ' : 'แสดงกรอบ';
-      overlayBtn.classList.toggle('bg-rose-600', state.showOverlay);
-      overlayBtn.classList.toggle('text-white', state.showOverlay);
+      overlayBtn.classList.toggle('is-on', state.showOverlay);
     };
     paint();
     overlayBtn.addEventListener('click', () => {
