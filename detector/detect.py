@@ -22,9 +22,12 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
+import numpy as np
+import torch
 from ultralytics import YOLO
 
 # COCO classes that are vehicles, and what to call them in Thai
@@ -55,6 +58,23 @@ BOX_COLOURS = {2: (80, 200, 12), 3: (4, 222, 254), 5: (255, 120, 20), 7: (32, 32
 MOTORCYCLE = 3
 MOTORCYCLE_CONF = 0.08
 AUGMENT = True
+
+# Half precision, which the card does in hardware. Measured over the same 18
+# frames, in a process that only ever used one precision: 610-641ms a frame at
+# fp32 against 201-289ms at fp16, and it finds slightly more rather than less
+# (282 vehicles against 287). On a machine without a GPU it would be slower, so
+# it is asked for only when there is one.
+#
+# Measure precision in its own process. Switching mid-process casts the weights
+# between calls and reads as 2.2s a frame, which is the cast, not the maths.
+QUANTIZE = 16 if torch.cuda.is_available() else None
+
+# Opening an HLS stream is almost entirely waiting on the network, so several
+# cameras are opened at once while inference stays on the one GPU. Over 19
+# cameras: 15.5s one at a time, 6.8s with three or five. Eight was worse at
+# 11.8s - past a handful the streams start competing for the same bandwidth,
+# and the sweep already has to share it with whoever is watching a camera.
+SWEEP_WORKERS = 4
 
 state = {
     "detections": {},   # camid -> reading
@@ -157,7 +177,7 @@ def vehicle_boxes(result, confidence):
 def predict(model, frame, confidence, imgsz):
     """One pass, floored low enough that the per-class floors can still apply."""
     return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
-                         augment=AUGMENT, verbose=False)[0]
+                         augment=AUGMENT, quantize=QUANTIZE, verbose=False)[0]
 
 
 def detect(model, frame, confidence, imgsz=1280):
@@ -473,47 +493,73 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
 
 # --- Sweep loop ------------------------------------------------------------
 
+def _capture(cam):
+    """One camera's frame, or the error that stopped it. Runs off the main thread."""
+    # The focus worker is already on this one, at a far better rate
+    with lock:
+        if state["focus"].get(cam["id"], 0) > time.time():
+            return cam, None, None, 0.0
+    started = time.time()
+    try:
+        return cam, grab_frame(cam["hls"]), None, time.time() - started
+    except Exception as exc:
+        return cam, None, str(exc)[:150], time.time() - started
+
+
 def sweep(model, cameras, confidence, imgsz):
-    for cam in cameras:
-        cam_id = cam["id"]
-        # The focus worker is already on this one, at a far better rate
-        with lock:
-            if state["focus"].get(cam_id, 0) > time.time():
+    with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
+        for cam, frame, error, secs in pool.map(_capture, cameras):
+            cam_id = cam["id"]
+            if frame is None and error is None:
+                continue  # focused, and being read faster elsewhere
+
+            started = time.time()
+            if error is None:
+                try:
+                    counts, total, annotated, boxes = detect(model, frame, confidence, imgsz)
+                except Exception as exc:
+                    error = str(exc)[:150]
+
+            elapsed = int((secs + time.time() - started) * 1000)
+            if error is not None:
+                with lock:
+                    state["detections"][cam_id] = {
+                        "id": cam_id,
+                        "title": cam["title"],
+                        "total": None,
+                        "counts": {},
+                        "boxes": [],
+                        "at": time.time(),
+                        "ms": elapsed,
+                        "error": error,
+                    }
                 continue
-        started = time.time()
-        try:
-            counts, total, annotated, boxes = detect(model, grab_frame(cam["hls"]), confidence, imgsz)
-            reading = {
-                "id": cam_id,
-                "title": cam["title"],
-                "total": total,
-                "counts": counts,
-                "boxes": boxes,
-                "at": time.time(),
-                "ms": int((time.time() - started) * 1000),
-                "error": None,
-            }
-            with lock:
-                state["detections"][cam_id] = reading
-                if annotated:
-                    state["frames"][cam_id] = annotated
-        except Exception as exc:
+
             with lock:
                 state["detections"][cam_id] = {
                     "id": cam_id,
                     "title": cam["title"],
-                    "total": None,
-                    "counts": {},
-                    "boxes": [],
+                    "total": total,
+                    "counts": counts,
+                    "boxes": boxes,
                     "at": time.time(),
-                    "ms": int((time.time() - started) * 1000),
-                    "error": str(exc)[:150],
+                    "ms": elapsed,
+                    "error": None,
                 }
+                if annotated:
+                    state["frames"][cam_id] = annotated
 
 
 def loop(site, interval, confidence, weights, imgsz, model_box=None):
     print(f"Loading {weights} ...", flush=True)
     model = YOLO(weights)
+
+    # The first real frame otherwise pays for the fp16 cast and for cuDNN
+    # choosing its algorithms, which turned the first sweep into 45s against the
+    # 8s of every sweep after it. One throwaway frame of the right shape moves
+    # that cost here, where nothing is waiting on it.
+    predict(model, np.zeros((720, 1280, 3), dtype=np.uint8), MOTORCYCLE_CONF, imgsz)
+
     state["model"] = weights
     if model_box is not None:
         model_box["model"] = model
