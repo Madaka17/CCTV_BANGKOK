@@ -99,7 +99,7 @@
 
           <!-- Quick View Tabs (Segmented Control) -->
           <nav class="flex items-center space-x-1 bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner">
-            <button id="tab-grid" class="view-tab active px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-md shadow-rose-600/30 cursor-pointer">
+            <button id="tab-grid" class="view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
               <span>กล้องวงจรปิด</span>
             </button>
@@ -351,7 +351,7 @@
   <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
 
     <!-- VIEW 1: Camera Grid -->
-    <div id="view-grid" class="view-panel space-y-6">
+    <div id="view-grid" class="view-panel hidden space-y-6">
       
       <!-- Cards Grid -->
       <div id="cameras-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
@@ -458,7 +458,7 @@
     </div>
 
     <!-- VIEW: Live HLS video cameras -->
-    <div id="view-video" class="view-panel hidden space-y-4">
+    <div id="view-video" class="view-panel space-y-4">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-slate-900/90 rounded-2xl border border-slate-800 shadow-md">
         <div>
           <h2 class="text-base font-bold text-white flex items-center space-x-2">

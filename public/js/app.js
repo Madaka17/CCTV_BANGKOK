@@ -15,7 +15,7 @@ const state = {
   currentSort: 'name',
   currentPage: 1,
   pageSize: 24,
-  currentView: 'grid', // 'grid' | 'map' | 'wall' | 'api'
+  currentView: 'video', // 'video' | 'grid' | 'map' | 'wall' | 'api'
   wallCameras: ['603', '1338', '915', '908'],
   wallLayout: '2x2',
   liveAll: true,
@@ -200,6 +200,7 @@ async function initApp() {
     initEventListeners();
     updateWallBadge();
     await loadServerConfig();
+    switchView(state.currentView);
     startLiveStreamingEngine();
     startWallRefreshEngine();
     startLiveClock();
@@ -538,7 +539,6 @@ async function loadServerConfig() {
     state.frameSource = cfg.frames || (cfg.upstream === 'blocked' ? 'none' : 'live');
     state.publishedIntervalSeconds = cfg.publishedIntervalSeconds || 30;
     state.frameBaseUrl = cfg.frameBaseUrl || null;
-    if (state.frameSource !== 'live') showFrameSourceBanner();
   } catch (e) {
     // Older server without /api/config: assume MJPEG works
   }
@@ -937,6 +937,8 @@ function switchView(viewName) {
   if (viewName === 'video') {
     loadVideoCameras();
   } else {
+    // The notice is about BMA frames, so raise it only where those are shown
+    if (state.frameSource !== 'live') showFrameSourceBanner();
     // Each player holds an open connection; leaving the view should close them
     stopAllHlsPlayers();
   }
