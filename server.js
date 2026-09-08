@@ -608,6 +608,27 @@ async function probeUpstream() {
   return upstreamProbe.status;
 }
 
+// An <img> pointed at a 503 shows the browser's broken-image icon, so answer
+// with a picture that says what happened instead.
+const PLACEHOLDER_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="266" viewBox="0 0 400 266">' +
+  '<rect width="400" height="266" fill="#0f172a"/>' +
+  '<text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#64748b" ' +
+  'font-size="14" font-family="sans-serif">\u0e20\u0e32\u0e1e\u0e44\u0e21\u0e48\u0e1e\u0e23\u0e49\u0e2d\u0e21\u0e43\u0e0a\u0e49\u0e07\u0e32\u0e19</text>' +
+  '</svg>',
+  'utf8'
+);
+
+function sendPlaceholder(res) {
+  res.writeHead(200, {
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Content-Length': PLACEHOLDER_SVG.length,
+    'Cache-Control': 'no-store',
+    'X-Frame-Source': 'unavailable'
+  });
+  res.end(PLACEHOLDER_SVG);
+}
+
 // Redirect to the published frame when BMA itself is out of reach. A redirect
 // keeps the image on the blob CDN instead of pushing every byte through the
 // function; returns false when there is nothing published to point at.
@@ -824,8 +845,7 @@ const requestHandler = async (req, res) => {
 
       const frame = await bmaSession.fetchCameraFrame(cameraId);
       if (!frame) {
-        res.writeHead(503, { 'Content-Type': 'text/plain' });
-        res.end('Camera feed unavailable');
+        sendPlaceholder(res);
         return;
       }
       res.writeHead(200, {
@@ -933,8 +953,7 @@ const requestHandler = async (req, res) => {
 
     const frame = await bmaSession.fetchCameraFrame(cameraId);
     if (!frame) {
-      res.writeHead(503, { 'Content-Type': 'text/plain' });
-      res.end('Camera feed unavailable');
+      sendPlaceholder(res);
       return;
     }
 

@@ -373,12 +373,29 @@ function updateLiveCountBadge() {
   }
 }
 
+// Placeholder drawn in place of a frame. Built with encodeURIComponent so it
+// survives being used inside an HTML attribute, which hand-escaped quotes did
+// not: the old inline onerror was invalid JS and left a broken-image icon.
+function placeholderImage(text) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="266" viewBox="0 0 400 266">`
+    + `<rect width="400" height="266" fill="#0f172a"/>`
+    + `<text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#64748b" font-size="14" font-family="sans-serif">${text}</text>`
+    + `</svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+const FRAME_UNAVAILABLE_IMAGE = placeholderImage('ภาพไม่พร้อมใช้งาน');
+
+// Used by inline onerror handlers, which cannot see module-local names
+window.FRAME_UNAVAILABLE_IMAGE = FRAME_UNAVAILABLE_IMAGE;
+
 // Where to load a single frame from. When frames are published rather than
 // live, go straight to the blob CDN: routing them through the function would
 // cost an invocation per image per refresh, for bytes it only redirects to.
 // The cache buster is bucketed to the publish interval so every viewer asks
 // for the same URL within a window and the CDN can actually serve it.
 function frameUrl(cid) {
+  if (state.frameSource === 'none') return FRAME_UNAVAILABLE_IMAGE;
   if (state.frameSource === 'published' && state.frameBaseUrl) {
     const bucket = Math.floor(Date.now() / (state.publishedIntervalSeconds * 1000));
     return `${state.frameBaseUrl}/frames/${cid}.jpg?v=${bucket}`;
@@ -411,9 +428,11 @@ function showFrameSourceBanner() {
   const published = state.frameSource === 'published';
   const banner = document.createElement('div');
   banner.id = 'frame-source-banner';
+  // Not sticky: the app header already claims top-0, and two stickers there
+  // just draw over each other.
   banner.className = published
-    ? 'sticky top-0 z-50 px-4 py-2.5 bg-sky-500/15 border-b border-sky-500/40 text-sky-200 text-xs flex items-center justify-center gap-2 text-center'
-    : 'sticky top-0 z-50 px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-center gap-2 text-center';
+    ? 'px-4 py-2.5 bg-sky-500/15 border-b border-sky-500/40 text-sky-200 text-xs flex items-center justify-center gap-2 text-center'
+    : 'px-4 py-2.5 bg-amber-500/15 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-center gap-2 text-center';
 
   const message = published
     ? `ภาพจากคลังภาพที่บันทึกไว้ อัปเดตทุก ${state.publishedIntervalSeconds} วินาที - กล้องที่เผยแพร่ไว้เท่านั้นที่มีภาพ`
@@ -438,6 +457,8 @@ function startLiveStreamingEngine() {
     ? state.publishedIntervalSeconds * 1000
     : state.liveIntervalMs;
 
+  if (state.frameSource === 'none') return;
+
   state.liveLoopTimer = setInterval(() => {
     if (!state.liveAll || state.currentView !== 'grid') return;
 
@@ -456,7 +477,7 @@ function startLiveStreamingEngine() {
 // /api/stream returns a single frame, so refresh the wall images ourselves.
 function startWallRefreshEngine() {
   if (state.wallLoopTimer) clearInterval(state.wallLoopTimer);
-  if (state.mjpegSupported) return;
+  if (state.mjpegSupported || state.frameSource === 'none') return;
 
   const intervalMs = state.frameSource === 'published'
     ? state.publishedIntervalSeconds * 1000
@@ -596,7 +617,7 @@ function renderGrid() {
               alt="${cam.name}" 
               loading="lazy" 
               class="w-full h-full object-cover smooth-stream-img transition-all duration-300 group-hover:scale-105"
-              onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'400\' height=\'266\' viewBox=\'0 0 400 266\' fill=\'%230f172a\'><text x=\'50%25\' y=\'50%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%2364748b\' font-size=\'14\' font-family=\'sans-serif\'>กำลังโหลดภาพสด...</text></svg>'"
+              onerror="this.onerror=null;this.src=window.FRAME_UNAVAILABLE_IMAGE" 
             />
 
             <!-- Top Left: Live Badge & ID -->
@@ -889,7 +910,7 @@ function updateMapMarkers() {
       const popupContent = `
         <div class="w-64 space-y-2 text-slate-100">
           <div class="aspect-video bg-black rounded-xl overflow-hidden border border-slate-700 relative">
-            <img src="${frameUrl(cam.id)}" alt="${cam.name}" class="w-full h-full object-cover" />
+            <img src="${frameUrl(cam.id)}" alt="${cam.name}" class="w-full h-full object-cover" onerror="this.onerror=null;this.src=window.FRAME_UNAVAILABLE_IMAGE" />
             <div class="absolute top-1.5 right-1.5">
               ${getTrafficBadgeHtml(traffic)}
             </div>
@@ -1074,7 +1095,7 @@ function renderWall() {
     return `
       <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col relative group">
         <div class="relative bg-black aspect-video flex items-center justify-center overflow-hidden">
-          <img id="wall-img-${cid}" src="${state.mjpegSupported ? '/api/stream/' + cid : frameUrl(cid)}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" />
+          <img id="wall-img-${cid}" src="${state.mjpegSupported ? '/api/stream/' + cid : frameUrl(cid)}" alt="${cam.name}" class="w-full h-full object-contain smooth-stream-img" onerror="this.onerror=null;this.src=window.FRAME_UNAVAILABLE_IMAGE" />
           
           <div class="absolute top-2.5 left-2.5 flex items-center space-x-1.5">
             <span class="px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow flex items-center space-x-1">
