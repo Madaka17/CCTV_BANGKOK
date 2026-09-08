@@ -299,6 +299,10 @@ async function loadDetections() {
     const data = await res.json();
     const list = data.detections || [];
 
+    // The detector runs beside the server, on a machine that can reach it.
+    // A deployed copy has none, and used to just show nothing at all.
+    showDetectorNotice(data.enabled === false);
+
     state.detections = new Map(list.map(d => [d.id, d]));
     const on = list.length > 0;
 
@@ -334,6 +338,18 @@ async function loadDetections() {
 }
 
 const LABELS = { car: 'รถยนต์', motorcycle: 'จยย.', bus: 'รถโดยสาร', truck: 'บรรทุก' };
+
+function showDetectorNotice(off) {
+  let bar = el('detector-notice');
+  if (!off) { if (bar) bar.remove(); return; }
+  if (bar) return;
+
+  bar = document.createElement('div');
+  bar.id = 'detector-notice';
+  bar.style.cssText = 'padding:10px 16px;background:rgba(245,158,11,.12);border-bottom:1px solid rgba(245,158,11,.4);color:#fcd34d;font-size:12px;text-align:center';
+  bar.textContent = 'เว็บนี้ไม่มีการตรวจจับรถ — ตัวตรวจจับทำงานบนเครื่องที่รันเซิร์ฟเวอร์เท่านั้น เปิดที่ http://localhost:3000 เพื่อดูกรอบตรวจจับ';
+  document.body.insertBefore(bar, document.body.firstChild);
+}
 
 // Swap each player for the detector's annotated still, and back
 function toggleBoxes() {
