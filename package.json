@@ -1,14 +1,14 @@
 {
-  "name": "bma-traffic-cctv-dashboard",
+  "name": "bangkok-traffic-live",
   "version": "1.0.0",
-  "description": "Bangkok BMA Traffic CCTV Live Dashboard with District Filters & MJPEG Streaming",
+  "description": "Live Bangkok traffic video and road conditions",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "py": "python3 server.py",
-    "publish:frames": "node publisher/publish-frames.js",
-    "publish:once": "node publisher/publish-frames.js --once"
+    "log:traffic": "node logger/log-traffic.js",
+    "log:once": "node logger/log-traffic.js --once"
   },
   "keywords": [
     "cctv",

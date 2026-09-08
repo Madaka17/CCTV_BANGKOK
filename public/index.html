@@ -34,6 +34,8 @@
     }
   </script>
 
+  <link href="/css/maplibre-gl.css" rel="stylesheet" />
+  <script src="/js/maplibre-gl.js"></script>
   <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body class="bg-[#0b0f19] text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-rose-500 selection:text-white">
@@ -52,6 +54,17 @@
         </div>
       </div>
 
+      <nav class="flex items-center space-x-1 bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner order-3 sm:order-none">
+        <button id="tab-cams" class="view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-white bg-rose-600 shadow-md shadow-rose-600/30 cursor-pointer">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+          <span>กล้องสด</span>
+        </button>
+        <button id="tab-map" class="view-tab px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center space-x-1.5 text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+          <span>แผนที่จราจร</span>
+        </button>
+      </nav>
+
       <div class="flex items-center space-x-2">
         <span id="clock" class="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-slate-300"></span>
         <span id="camera-count" class="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-xs font-semibold text-emerald-300"></span>
@@ -63,8 +76,26 @@
   </header>
 
   <main class="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 py-5">
-    <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-      <div class="col-span-full py-20 text-center text-slate-400 text-sm">กำลังโหลดกล้อง...</div>
+    <div id="view-cams">
+      <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div class="col-span-full py-20 text-center text-slate-400 text-sm">กำลังโหลดกล้อง...</div>
+      </div>
+    </div>
+
+    <div id="view-map" class="hidden space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-900/90 rounded-2xl border border-slate-800">
+        <div class="flex items-center gap-4 text-xs">
+          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#54C00C"></span>คล่องตัว</span>
+          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#FEDE04"></span>ชะลอตัว</span>
+          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#FF2020"></span>ติดขัด</span>
+          <span class="text-slate-500 hidden sm:inline">| หมุดแดง = กล้องสด คลิกเพื่อดู</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="traffic-index" class="px-2.5 py-1 rounded-lg bg-slate-800 text-xs text-slate-300"></span>
+          <span id="traffic-updated" class="text-[11px] text-slate-500"></span>
+        </div>
+      </div>
+      <div id="map" class="w-full rounded-2xl overflow-hidden border border-slate-800" style="height:72vh"></div>
     </div>
   </main>
 

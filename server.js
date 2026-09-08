@@ -1002,6 +1002,27 @@ const requestHandler = async (req, res) => {
     return;
   }
 
+  // Longdo's overall traffic index, the one number their own sites show.
+  // Proxied so the page is not making a jsonp call of its own.
+  if (pathname === '/api/traffic-index') {
+    try {
+      const r = await fetch(`https://traffic.longdo.com/api/json/traffic/index?time=${Date.now()}`, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(8000)
+      });
+      const body = await r.text();
+      res.writeHead(r.ok ? 200 : 502, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=60'
+      });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: String(err.message || err) }));
+    }
+    return;
+  }
+
   // Cameras a browser can play by itself, wherever it is
   if (pathname === '/api/video-cameras') {
     const { list, fetchedAt, error } = await loadVideoCameras();
