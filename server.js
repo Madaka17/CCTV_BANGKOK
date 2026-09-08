@@ -36,6 +36,22 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 
 // Node's fetch sends a bare request. The BMA WAF is stricter about traffic from
 // outside Thailand, so send what a real browser would.
+// Frames are pulled by a pool of parallel requests: one request at a time tops
+// out near 1 fps because each round trip costs ~1.35s, while fourteen in
+// flight measured 8.7 fps with only 6% of responses repeating a frame - the
+// source is faster than a single connection can drain.
+const PUMP_WORKERS = Number(process.env.PUMP_WORKERS || 12);
+// Parallel replies arrive out of order and unevenly spaced, so playback runs
+// this far behind capture. The delay is what buys smoothness: measured over 25s
+// on one camera, 3s gave p90 gaps of 242ms and three visible stalls, 5s gave
+// 165ms and one. Being five seconds behind means nothing for a traffic camera.
+const PLAYBACK_DELAY_MS = Number(process.env.PLAYBACK_DELAY_MS || 5000);
+// Enough to cover the delay plus headroom (~25 KB a frame, so ~4 MB a camera)
+const RING_MAX_FRAMES = Number(process.env.RING_MAX_FRAMES || 150);
+// Emit no faster than this; when no frame is due the loop simply waits, so
+// output settles at whatever rate the source actually sustains.
+const STREAM_TICK_MS = 80;
+
 const BROWSER_HEADERS = {
   'User-Agent': USER_AGENT,
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -279,7 +295,8 @@ class BmaSessionManager {
     this.frameCache = new Map(); // cameraId -> { buffer, timestamp, md5 }
     this.frameRingBuffers = new Map(); // cameraId -> Array of { buffer, timestamp, md5 }
     this.pendingFetches = new Map(); // cameraId -> Promise
-    this.activePollers = new Map(); // cameraId -> { timer, lastRequested }
+    this.activePollers = new Map(); // cameraId -> { workers, lastRequested, running }
+    this.lastCvAnalysis = new Map(); // cameraId -> timestamp
     this.activeStreams = new Map(); // cameraId -> stream object
   }
 
@@ -389,6 +406,7 @@ class BmaSessionManager {
       const buffer = Buffer.from(arrayBuf);
 
       if (buffer.length > 2000) {
+        noteUpstreamReachable();
         const frameMd5 = getMd5(buffer);
         const cached = this.frameCache.get(cameraId);
         const isDifferent = !cached || cached.md5 !== frameMd5;
@@ -404,11 +422,22 @@ class BmaSessionManager {
 
         if (isDifferent) {
           const prevBuf = ring.length > 0 ? ring[ring.length - 1].buffer : null;
-          ring.push({ buffer, timestamp: Date.now(), md5: frameMd5 });
-          if (ring.length > 15) ring.shift();
 
-          // Asynchronous CV Traffic Analysis on new frame
-          triggerCvAnalysis(cameraId, buffer, prevBuf);
+          // `now` is when the request went out. Responses from a pool come back
+          // out of order, so ordering by arrival would make playback jump
+          // backwards; request time is the closest stand-in for capture time.
+          const frame = { buffer, timestamp: now, md5: frameMd5 };
+          const at = ring.findIndex(f => f.timestamp > now);
+          if (at === -1) ring.push(frame); else ring.splice(at, 0, frame);
+          while (ring.length > RING_MAX_FRAMES) ring.shift();
+
+          // Asynchronous CV Traffic Analysis on new frame, at most once a
+          // second - at pump speed every frame would be far too many
+          const lastAnalysis = this.lastCvAnalysis.get(cameraId) || 0;
+          if (Date.now() - lastAnalysis > 1000) {
+            this.lastCvAnalysis.set(cameraId, Date.now());
+            triggerCvAnalysis(cameraId, buffer, prevBuf);
+          }
         }
 
         return buffer;
@@ -455,73 +484,54 @@ class BmaSessionManager {
     return fetchPromise;
   }
 
-  // Active poller for cameras actively viewed (modal or wall) to ensure high-cadence fresh frames
-  startActivePolling(cameraId) {
-    if (this.activePollers.has(cameraId)) {
-      this.activePollers.get(cameraId).lastRequested = Date.now();
+  // Keep the ring buffer full for a camera someone is actually watching.
+  //
+  // Each request costs about 1.35s no matter what, so the only way to raise the
+  // frame rate is to have several in flight at once. Workers stop on their own
+  // once nobody has asked for this camera for 45 seconds.
+  startActivePolling(cameraId, workers = PUMP_WORKERS) {
+    const existing = this.activePollers.get(cameraId);
+    if (existing) {
+      existing.lastRequested = Date.now();
       return;
     }
 
-    const poller = {
-      lastRequested: Date.now(),
-      timer: null
-    };
+    const pump = { lastRequested: Date.now(), running: 0 };
+    this.activePollers.set(cameraId, pump);
 
-    const poll = async () => {
-      if (Date.now() - poller.lastRequested > 45000) {
-        if (poller.timer) clearInterval(poller.timer);
-        this.activePollers.delete(cameraId);
-        return;
-      }
+    const worker = async () => {
+      pump.running++;
       try {
-        await this.fetchFreshFrame(cameraId);
-      } catch (e) {}
+        while (Date.now() - pump.lastRequested < 45000) {
+          try {
+            await this.fetchFreshFrame(cameraId);
+          } catch (e) {
+            // A failed request should slow this worker, not spin it
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+      } finally {
+        pump.running--;
+        if (pump.running === 0) this.activePollers.delete(cameraId);
+      }
     };
 
-    poller.timer = setInterval(poll, 1100);
-    if (typeof poller.timer.unref === 'function') poller.timer.unref();
-    this.activePollers.set(cameraId, poller);
-    poll();
+    for (let i = 0; i < workers; i++) worker();
+  }
+
+  // The newest frame that is old enough to play, and everything after it
+  framesReadyToPlay(cameraId, after) {
+    const ring = this.frameRingBuffers.get(cameraId) || [];
+    const deadline = Date.now() - PLAYBACK_DELAY_MS;
+    return ring.filter(f => f.timestamp <= deadline && (after === null || f.timestamp > after));
   }
 
   // Subscribe a client response to continuous pipeline MJPEG stream
   subscribeStream(cameraId, res) {
     let stream = this.activeStreams.get(cameraId);
     if (!stream) {
-      stream = {
-        subscribers: new Set(),
-        running: false,
-        cleanupTimer: null
-      };
+      stream = { subscribers: new Set(), running: false, cleanupTimer: null };
       this.activeStreams.set(cameraId, stream);
-
-      const streamLoop = async () => {
-        stream.running = true;
-        while (stream.subscribers.size > 0) {
-          const frame = await this.fetchFreshFrame(cameraId);
-          if (frame && stream.subscribers.size > 0) {
-            const boundary = '--frame\r\n';
-            const header = `Content-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`;
-            const chunk = Buffer.concat([
-              Buffer.from(boundary + header),
-              frame,
-              Buffer.from('\r\n')
-            ]);
-
-            for (const sub of stream.subscribers) {
-              try {
-                sub.write(chunk);
-              } catch {
-                stream.subscribers.delete(sub);
-              }
-            }
-          }
-          await new Promise(r => setTimeout(r, 30));
-        }
-        stream.running = false;
-      };
-
-      streamLoop().catch(console.error);
     }
 
     if (stream.cleanupTimer) {
@@ -531,18 +541,21 @@ class BmaSessionManager {
 
     stream.subscribers.add(res);
 
+    // Something to look at straight away, rather than a blank frame while the
+    // playback buffer fills. This also flushes the response headers.
     const cached = this.frameCache.get(cameraId);
     if (cached) {
-      const boundary = '--frame\r\n';
-      const header = `Content-Type: image/jpeg\r\nContent-Length: ${cached.buffer.length}\r\n\r\n`;
       try {
-        res.write(Buffer.concat([
-          Buffer.from(boundary + header),
-          cached.buffer,
-          Buffer.from('\r\n')
-        ]));
+        res.write(this.mjpegChunk(cached.buffer));
       } catch {}
     }
+
+    // The loop ends as soon as the last viewer leaves, but the stream object
+    // lingers for a few seconds. A viewer arriving in that window used to
+    // attach to a dead loop and never receive another frame, so start it
+    // whenever it is not already running - after the subscriber is added, or
+    // it would see an empty set and exit immediately.
+    if (!stream.running) this.runStreamLoop(cameraId, stream);
 
     res.on('close', () => {
       stream.subscribers.delete(res);
@@ -556,6 +569,47 @@ class BmaSessionManager {
       }
     });
   }
+
+  mjpegChunk(buffer) {
+    const header = `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buffer.length}\r\n\r\n`;
+    return Buffer.concat([Buffer.from(header), buffer, Buffer.from('\r\n')]);
+  }
+
+  // Play out of the ring buffer on a steady tick rather than writing each
+  // response as it lands. The pump keeps the buffer full; this loop only
+  // decides when to show what, which is what makes the motion even.
+  async runStreamLoop(cameraId, stream) {
+    stream.running = true;
+    let lastSent = null;
+
+    try {
+      while (stream.subscribers.size > 0) {
+        this.startActivePolling(cameraId);
+
+        const due = this.framesReadyToPlay(cameraId, lastSent);
+        if (due.length) {
+          // Further behind than the buffer is deep: jump to the newest rather
+          // than keep playing further into the past
+          const frame = due.length > RING_MAX_FRAMES / 2 ? due[due.length - 1] : due[0];
+          lastSent = frame.timestamp;
+
+          const chunk = this.mjpegChunk(frame.buffer);
+          for (const sub of stream.subscribers) {
+            try {
+              sub.write(chunk);
+            } catch {
+              stream.subscribers.delete(sub);
+            }
+          }
+        }
+
+        await new Promise(r => setTimeout(r, STREAM_TICK_MS));
+      }
+    } finally {
+      stream.running = false;
+    }
+  }
+
 }
 
 const bmaSession = new BmaSessionManager();
@@ -624,12 +678,22 @@ async function frameSource() {
 // IPs with a bot challenge, so a deployed host sees no frames at all while a
 // machine in Thailand sees them fine. Cached, since this only changes rarely.
 let upstreamProbe = { status: 'unknown', checkedAt: 0 };
+// A good answer is stable, so trust it for a while. A bad one is often just a
+// slow reply while the frame pump has the connection busy, so re-check soon
+// rather than writing the upstream off for five minutes.
+const UPSTREAM_OK_TTL_MS = 5 * 60 * 1000;
+const UPSTREAM_FAIL_TTL_MS = 30 * 1000;
+
 async function probeUpstream() {
-  if (Date.now() - upstreamProbe.checkedAt < 5 * 60 * 1000) return upstreamProbe.status;
+  const ttl = upstreamProbe.status === 'ok' ? UPSTREAM_OK_TTL_MS : UPSTREAM_FAIL_TTL_MS;
+  if (Date.now() - upstreamProbe.checkedAt < ttl) return upstreamProbe.status;
+
   try {
     const r = await fetch(`${BMA_BASE}/index.aspx`, {
       headers: BROWSER_HEADERS,
-      signal: AbortSignal.timeout(8000)
+      // index.aspx is a 450 KB page and takes ~2.5s unloaded; 8s was tight
+      // enough that ordinary slowness read as a block
+      signal: AbortSignal.timeout(20000)
     });
     upstreamProbe = {
       status: r.ok && r.headers.get('set-cookie') ? 'ok' : 'blocked',
@@ -639,6 +703,12 @@ async function probeUpstream() {
     upstreamProbe = { status: 'blocked', checkedAt: Date.now() };
   }
   return upstreamProbe.status;
+}
+
+// A frame that just arrived proves the upstream is reachable, whatever the
+// last probe concluded.
+function noteUpstreamReachable() {
+  if (upstreamProbe.status !== 'ok') upstreamProbe = { status: 'ok', checkedAt: Date.now() };
 }
 
 // An <img> pointed at a 503 shows the browser's broken-image icon, so answer
@@ -937,6 +1007,9 @@ const requestHandler = async (req, res) => {
       'Connection': 'close',
       'Pragma': 'no-cache'
     });
+    // Node holds headers back until the first write, and the first frame is a
+    // few seconds out, so the client would see nothing at all until then.
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     bmaSession.subscribeStream(cameraId, res);
     return;
