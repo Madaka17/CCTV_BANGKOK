@@ -574,37 +574,30 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
-// Frames published to Vercel Blob by publisher/publish-frames.js, for when the
-// BMA site cannot be reached from here.
-//
-// Connecting a Blob store to the project puts BLOB_READ_WRITE_TOKEN in the
-// environment, and the store id sits inside it, so the public origin can be
-// worked out without anyone setting a second variable by hand. BLOB_BASE_URL
-// still wins if it is set.
-function deriveBlobBaseUrl() {
-  const explicit = (process.env.BLOB_BASE_URL || '').replace(/\/+$/, '');
-  if (explicit) return explicit;
+// Frames published to Cloudflare R2 by publisher/publish-frames.js, for when
+// the BMA site cannot be reached from here. FRAMES_BASE_URL is the bucket's
+// public origin, printed by the publisher's first run.
+const FRAMES_BASE_URL = (process.env.FRAMES_BASE_URL || '').replace(/\/+$/, '');
+const publishedFrameUrl = (cameraId) =>
+  FRAMES_BASE_URL ? `${FRAMES_BASE_URL}/frames/${encodeURIComponent(cameraId)}.jpg` : null;
 
-  const match = (process.env.BLOB_READ_WRITE_TOKEN || '').match(/^vercel_blob_rw_([A-Za-z0-9]+)_/);
-  return match ? `https://${match[1].toLowerCase()}.public.blob.vercel-storage.com` : null;
-}
-
-const BLOB_BASE_URL = deriveBlobBaseUrl();
-const blobFrameUrl = (cameraId) =>
-  BLOB_BASE_URL ? `${BLOB_BASE_URL}/frames/${encodeURIComponent(cameraId)}.jpg` : null;
-
-// A derived origin is a guess until something has actually been published to
-// it, so confirm by reading the manifest the publisher writes each sweep.
-let publishedProbe = { ok: false, checkedAt: 0 };
+// Having the URL is not the same as having frames behind it, so confirm by
+// reading the manifest the publisher writes each sweep.
+let publishedProbe = { ok: false, intervalSeconds: 300, checkedAt: 0 };
 async function probePublished() {
-  if (!BLOB_BASE_URL) return false;
+  if (!FRAMES_BASE_URL) return false;
   if (Date.now() - publishedProbe.checkedAt < 5 * 60 * 1000) return publishedProbe.ok;
 
   try {
-    const r = await fetch(`${BLOB_BASE_URL}/frames/manifest.json`, { signal: AbortSignal.timeout(8000) });
-    publishedProbe = { ok: r.ok, checkedAt: Date.now() };
+    const r = await fetch(`${FRAMES_BASE_URL}/frames/manifest.json`, { signal: AbortSignal.timeout(8000) });
+    const manifest = r.ok ? await r.json() : null;
+    publishedProbe = {
+      ok: Boolean(manifest && manifest.count),
+      intervalSeconds: (manifest && manifest.intervalSeconds) || 300,
+      checkedAt: Date.now()
+    };
   } catch (err) {
-    publishedProbe = { ok: false, checkedAt: Date.now() };
+    publishedProbe = { ok: false, intervalSeconds: 300, checkedAt: Date.now() };
   }
   return publishedProbe.ok;
 }
@@ -662,7 +655,7 @@ function sendPlaceholder(res) {
 // keeps the image on the blob CDN instead of pushing every byte through the
 // function; returns false when there is nothing published to point at.
 async function servePublishedFrame(cameraId, res) {
-  const url = blobFrameUrl(cameraId);
+  const url = publishedFrameUrl(cameraId);
   if (!url) return false;
   if ((await frameSource()) !== 'published') return false;
 
@@ -677,7 +670,7 @@ async function servePublishedFrame(cameraId, res) {
 
 // Same decision, but with the bytes in hand (for endpoints that inline frames)
 async function fetchPublishedFrame(cameraId) {
-  const url = blobFrameUrl(cameraId);
+  const url = publishedFrameUrl(cameraId);
   if (!url) return null;
   if ((await frameSource()) !== 'published') return null;
 
@@ -828,8 +821,8 @@ const requestHandler = async (req, res) => {
       mjpeg: !IS_SERVERLESS,
       upstream,
       frames,
-      publishedIntervalSeconds: 30,
-      frameBaseUrl: frames === 'published' ? BLOB_BASE_URL : null
+      publishedIntervalSeconds: publishedProbe.intervalSeconds,
+      frameBaseUrl: frames === 'published' ? FRAMES_BASE_URL : null
     }));
     return;
   }

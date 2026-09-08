@@ -5,17 +5,19 @@
  * The BMA site sits behind Cloudflare, whose edge answers datacenter IPs with a
  * bot challenge, so the deployed dashboard cannot fetch camera frames at all.
  * This script runs on a machine that CAN reach it - your Mac in Bangkok - grabs
- * a frame per camera and uploads it to Vercel Blob, where the deployed site
+ * a frame per camera and uploads it to Cloudflare R2, where the deployed site
  * reads it instead.
  *
  *   node publisher/publish-frames.js --once     one sweep, then exit
  *   node publisher/publish-frames.js            sweep every INTERVAL_SECONDS
  *
- * Needs BLOB_READ_WRITE_TOKEN in the environment (or in .env.local).
+ * Needs the R2_* variables in the environment (or in .env.local) - see
+ * publisher/README.md.
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { putObject } = require('./r2.js');
 
 const BMA_BASE = 'https://cpudapp.bangkok.go.th/bmatraffic';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -32,7 +34,10 @@ const BROWSER_HEADERS = {
 };
 
 const ROOT = path.join(__dirname, '..');
-const INTERVAL_SECONDS = Number(process.env.INTERVAL_SECONDS || 30);
+// R2's free tier allows a million writes a month. At 51 writes a sweep (50
+// cameras plus the manifest) five minutes lands near 44% of that; a minute
+// would be 220%. See the table in publisher/README.md before lowering it.
+const INTERVAL_SECONDS = Number(process.env.INTERVAL_SECONDS || 300);
 const CONCURRENCY = Number(process.env.CONCURRENCY || 12);
 const RUN_ONCE = process.argv.includes('--once');
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -114,34 +119,41 @@ async function fetchFrame(cameraId) {
 
 // --- Upload ----------------------------------------------------------------
 
-let put;
-function loadBlobClient() {
+let r2Config = null;
+
+function loadR2Config() {
   if (DRY_RUN) return;
-  try {
-    ({ put } = require('@vercel/blob'));
-  } catch (err) {
-    console.error('Missing @vercel/blob. Run:  npm install');
+
+  const config = {
+    accountId: process.env.R2_ACCOUNT_ID,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    bucket: process.env.R2_BUCKET
+  };
+
+  const missing = Object.entries(config).filter(([, v]) => !v).map(([k]) => k);
+  if (missing.length || !process.env.R2_PUBLIC_BASE_URL) {
+    if (!process.env.R2_PUBLIC_BASE_URL) missing.push('R2_PUBLIC_BASE_URL');
+    console.error(`Missing in .env.local: ${missing.map(camelToEnv).join(', ')}`);
+    console.error('See publisher/README.md for where each one comes from.');
     process.exit(1);
   }
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    console.error('Missing BLOB_READ_WRITE_TOKEN.');
-    console.error('Create a Blob store in the Vercel dashboard, then put its token in .env.local:');
-    console.error('  BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...');
-    process.exit(1);
-  }
+
+  r2Config = config;
 }
+
+const camelToEnv = (name) =>
+  name.startsWith('R2_') ? name : 'R2_' + name.replace(/[A-Z]/g, c => '_' + c).toUpperCase();
 
 async function upload(pathname, body, contentType) {
   if (DRY_RUN) return `dry-run://${pathname}`;
-  const result = await put(pathname, body, {
-    access: 'public',
+  await putObject(r2Config, pathname, body, {
     contentType,
-    addRandomSuffix: false,   // stable URL, so the site can link straight to it
-    allowOverwrite: true,
-    cacheControlMaxAge: 60, // the blob API's floor; the site busts it per interval
-    token: process.env.BLOB_READ_WRITE_TOKEN
+    // Long enough that the CDN absorbs the readers, short enough that a frame
+    // is never much staler than the sweep that wrote it.
+    cacheControl: `public, max-age=${Math.max(30, Math.floor(INTERVAL_SECONDS / 2))}`
   });
-  return result.url;
+  return `${process.env.R2_PUBLIC_BASE_URL.replace(/\/+$/, '')}/${pathname}`;
 }
 
 // --- Sweep -----------------------------------------------------------------
@@ -181,7 +193,7 @@ async function sweep(cameraIds) {
     count: Object.keys(published).length,
     cameras: published
   };
-  const manifestUrl = await upload('frames/manifest.json', JSON.stringify(manifest), 'application/json');
+  const manifestUrl = await upload('frames/manifest.json', Buffer.from(JSON.stringify(manifest)), 'application/json');
   if (DRY_RUN) {
     const sizes = Object.values(published).map(p => p.bytes);
     const total = sizes.reduce((a, b) => a + b, 0);
@@ -195,18 +207,22 @@ async function sweep(cameraIds) {
 
 async function main() {
   loadEnvFile();
-  loadBlobClient();
+  loadR2Config();
 
   const cameraIds = loadCameraIds();
+  const writesPerMonth = (cameraIds.length + 1) * (86400 / INTERVAL_SECONDS) * 30;
+  const quotaPct = Math.round(writesPerMonth / 1e6 * 100);
   console.log(`Publishing ${cameraIds.length} cameras every ${INTERVAL_SECONDS}s (concurrency ${CONCURRENCY})`);
+  console.log(`Projected ${writesPerMonth.toLocaleString('en-US')} writes/month - ${quotaPct}% of R2's free million`);
+  if (quotaPct > 100) console.log('WARNING: that is over the free tier. Raise INTERVAL_SECONDS or publish fewer cameras.');
 
   const manifestUrl = await sweep(cameraIds);
   const baseUrl = manifestUrl.replace(/\/frames\/manifest\.json$/, '');
   if (!DRY_RUN) {
     console.log('');
     console.log(`Frames are live at ${baseUrl}/frames/<id>.jpg`);
-    console.log('The deployed site works this URL out from BLOB_READ_WRITE_TOKEN on its own.');
-    console.log(`If it ever cannot, set BLOB_BASE_URL=${baseUrl} on the Vercel project.`);
+    console.log('Set this on the Vercel project (Settings -> Environment Variables), then redeploy:');
+    console.log(`  FRAMES_BASE_URL=${baseUrl}`);
     console.log('');
   }
 
