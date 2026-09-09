@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 tunnel/current-url.txt
 .claude/settings.local.json
+
+# Detached server and detector, started with output redirected to files
+*.log
