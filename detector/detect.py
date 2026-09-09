@@ -50,8 +50,8 @@ BOX_COLOURS = {2: (80, 200, 12), 3: (4, 222, 254), 5: (255, 120, 20), 7: (32, 32
 #
 # The added boxes sit on real traffic - mostly the far end of the road, which a
 # single pass misses. Augmentation costs about 200ms a frame against 500-700ms,
-# and that fits: focus runs YOLO every third frame at 2 fps, and sweeps are
-# paused while anyone is watching.
+# and that fits: focus runs YOLO every third frame, and it is the only thing
+# using the GPU now that sweeps are off.
 #
 # Measured at night, in rain. Motorcycles are hardest to tell from cars then, so
 # treat these as the floor of what daylight should give.
@@ -130,6 +130,9 @@ def ensure_cameras(site):
 # the stream here takes under half a second.
 
 STREAM_TIMEOUT_MS = 15000
+# How often the camera list is re-read when sweeps are off. The catalogue is
+# cached for ten minutes upstream, so asking faster only repeats the answer.
+CATALOGUE_REFRESH = 300
 # A grab that returns this fast came out of ffmpeg's buffer; one that waits
 # longer went to the wire, which means the buffer is empty and we are live.
 LIVE_EDGE_SECS = 0.030
@@ -619,6 +622,15 @@ def loop(site, interval, confidence, weights, imgsz, model_box=None):
                 time.sleep(5)
                 continue
 
+            if interval <= 0:
+                # Sweeps off, as --interval has always said 0 would do. The
+                # page only draws boxes on the camera someone has opened, so
+                # reading the other twenty costs a stream and a YOLO pass each
+                # and nothing looks at the answer. Keeping the list fresh is
+                # all this thread is for now; the focus workers get the GPU.
+                time.sleep(CATALOGUE_REFRESH)
+                continue
+
             sweep(model, state["cameras"], confidence, imgsz)
             state["sweeps"] += 1
 
@@ -745,7 +757,12 @@ def main():
     ap.add_argument("--focus-workers", type=int, default=2,
                     help="cameras that can be tracked at once; each is a stream and "
                          "a share of the CPU, so keep it small")
-    ap.add_argument("--focus-fps", type=float, default=2.0,
+    # 2.0 was the rate that fit while a sweep of every camera ran alongside.
+    # With sweeps off the same machine measured 10.5 fps on one camera, so the
+    # ceiling is the model, not contention. 8 keeps a margin: two people can
+    # watch two cameras at once, and the tracker just slows rather than breaks
+    # if the GPU cannot keep up.
+    ap.add_argument("--focus-fps", type=float, default=8.0,
                     help="frames a second to pull for the camera being watched")
     args = ap.parse_args()
 

@@ -11,7 +11,6 @@ const state = {
   players: new Map(), // camera id -> Hls instance
   view: 'cams',
   detections: new Map(), // camera id -> reading
-  showBoxes: false,
   showOverlay: localStorage.getItem('showOverlay') !== '0',
   // Measured against these servers: eight parallel fetches shared 2.5 Mbps in
   // total, while the streams themselves run 0.3-6.8 Mbps each. Playing all
@@ -118,7 +117,6 @@ function render() {
         </button>
 
         <div id="o-${cssId(cam.id)}" class="absolute inset-0 pointer-events-none"></div>
-        <img id="b-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain hidden" alt="" />
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
@@ -326,7 +324,7 @@ function watchVisibility() {
   if (state.observer) state.observer.disconnect();
 
   state.observer = new IntersectionObserver((entries) => {
-    if (state.view !== 'cams' || state.showBoxes) return;
+    if (state.view !== 'cams') return;
 
     entries.forEach(entry => {
       const id = entry.target.dataset.camId;
@@ -369,18 +367,19 @@ async function loadDetections() {
     // A deployed copy has none, and used to just show nothing at all.
     showDetectorNotice(data.enabled === false);
 
-    state.detections = new Map(list.map(d => [d.id, d]));
-    const on = list.length > 0;
-
-    const toggle = el('btn-boxes');
-    if (toggle) toggle.classList.toggle('hidden', !on);
+    // Nothing refreshes a camera once it is closed, so a reading left over
+    // from a view an hour ago would otherwise sit on the grid looking current.
+    const now = Date.now() / 1000;
+    const fresh = list.filter(d => now - d.at < STALE_AFTER);
+    state.detections = new Map(fresh.map(d => [d.id, d]));
 
     const badge = el('vehicle-total');
     if (badge) {
-      const seen = list.filter(d => d.total !== null);
+      const seen = fresh.filter(d => d.total !== null);
       const total = seen.reduce((n, d) => n + d.total, 0);
-      badge.classList.toggle('hidden', !on);
-      badge.textContent = on ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
+      badge.classList.toggle('hidden', !seen.length);
+      badge.textContent = seen.length
+        ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
     }
 
     if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
@@ -393,12 +392,22 @@ async function loadDetections() {
 }
 
 const LABELS = { car: 'รถยนต์', motorcycle: 'จยย.', bus: 'รถโดยสาร', truck: 'บรรทุก' };
+// A count is only worth showing while it still describes the road. Detection
+// runs on the open camera alone, so anything older than this is a leftover.
+const STALE_AFTER = 120;
 
 // Reads from the stored readings rather than from one response, so a fresh
 // grid can be filled in too. The catalogue and the detections are fetched at
 // the same moment: when the detections landed first, render() wiped these
 // lines and a new visitor saw no counts until the next poll, twenty seconds on.
 function paintCardCounts() {
+  // Wipe first: a reading that has just aged out is gone from the map, and
+  // painting only what is left would leave its old line on the card forever.
+  state.cameras.forEach(cam => {
+    const box = el('c-' + cssId(cam.id));
+    if (box && !state.detections.has(cam.id)) box.textContent = '';
+  });
+
   state.detections.forEach(d => {
     const box = el('c-' + cssId(d.id));
     if (!box) return;
@@ -425,37 +434,6 @@ function showDetectorNotice(off) {
   document.body.insertBefore(bar, document.body.firstChild);
 }
 
-// Swap each player for the detector's annotated still, and back
-function toggleBoxes() {
-  state.showBoxes = !state.showBoxes;
-  const btn = el('btn-boxes');
-  if (btn) {
-    btn.textContent = state.showBoxes ? 'ดูวิดีโอสด' : 'แสดงกรอบรถ';
-    btn.classList.toggle('is-on', state.showBoxes);
-  }
-
-  state.cameras.forEach(cam => {
-    const img = el('b-' + cssId(cam.id));
-    const vid = el('v-' + cssId(cam.id));
-    if (img) img.classList.toggle('hidden', !state.showBoxes);
-    if (vid) vid.classList.toggle('hidden', state.showBoxes);
-  });
-
-  if (state.showBoxes) {
-    stopAllPlayers();
-    refreshBoxImages();
-  } else {
-    watchVisibility();
-  }
-}
-
-function refreshBoxImages() {
-  if (!state.showBoxes) return;
-  state.cameras.forEach(cam => {
-    const img = el('b-' + cssId(cam.id));
-    if (img) img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
-  });
-}
 
 // --- Box overlay -----------------------------------------------------------
 //
@@ -484,14 +462,11 @@ function drawBoxes(camId, overlay, video) {
   if (!state.showOverlay) { overlay.innerHTML = ''; return; }
 
   if (!boxes.length) {
-    // Detection follows whichever camera is playing, so a card that has none
-    // should say so rather than look broken
-    const waiting = state.focusId === camId;
-    overlay.innerHTML = state.playing.includes(camId)
-      ? `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
-           ${waiting ? 'กำลังเริ่มตรวจจับ...' : 'ยังไม่ได้ตรวจจับกล้องนี้'}
-         </div>`
-      : '';
+    // The first pass takes a moment after the stream opens, and a bare picture
+    // in the meantime reads as the detector being broken
+    overlay.innerHTML = `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
+        ${state.focusId === camId ? 'กำลังเริ่มตรวจจับ...' : 'ยังไม่ได้ตรวจจับกล้องนี้'}
+      </div>`;
     return;
   }
 
@@ -521,10 +496,12 @@ function drawBoxes(camId, overlay, video) {
     </div>`;
 }
 
+// Only the camera someone has opened. The grid used to draw boxes on every
+// playing card, and that is what forced the detector to sweep all of them:
+// twenty streams and twenty YOLO passes a round to decorate thumbnails too
+// small to read a box off. One camera at a time is also the only way the
+// tracker reaches its full rate.
 function redrawAllBoxes() {
-  state.playing.forEach(id => {
-    drawBoxes(id, el('o-' + cssId(id)), el('v-' + cssId(id)));
-  });
   if (state.detail && state.detailMode === 'live') {
     drawBoxes(state.detail.id, el('detail-overlay'), el('detail-video'));
   }
@@ -585,15 +562,10 @@ function updateFocusBadge() {
   if (on) b.textContent = `ตรวจจับสด ${state.focusFps.toFixed(1)} fps`;
 }
 
-// Whatever the viewer is actually looking at: the open camera, else the first
-// one playing in the grid.
+// The open camera, or nothing. Closing the detail releases the detector, so a
+// grid left open on screen costs it nothing.
 function refreshFocusTarget() {
-  if (state.detail) { setFocus(state.detail.id); return; }
-  if (state.view === 'cams' && !state.showBoxes && state.playing.length) {
-    setFocus(state.playing[state.playing.length - 1]);
-    return;
-  }
-  setFocus(null);
+  setFocus(state.detail ? state.detail.id : null);
 }
 
 // --- Camera detail ---------------------------------------------------------
@@ -1097,12 +1069,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('fullscreenchange', () => setTimeout(redrawAllBoxes, 200));
   document.addEventListener('webkitfullscreenchange', () => setTimeout(redrawAllBoxes, 200));
 
-  const boxes = el('btn-boxes');
-  if (boxes) boxes.addEventListener('click', toggleBoxes);
   loadDetections();
   setInterval(() => {
     if (state.view !== 'cams') return;
     loadDetections();
-    refreshBoxImages();
   }, 20000);
 });
