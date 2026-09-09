@@ -144,6 +144,12 @@ LIVE_EDGE_SECS = 0.030
 # that takes, which measured as up to 1.9s on these streams. That grab is the
 # one worth paying for - it is the frame that is actually live.
 DRAIN_BUDGET_SECS = 0.5
+# How far the focused read may fall behind live before it snaps forward.
+# Decoding one frame in every skip + 1 is only right while the model keeps to
+# its rate; a pass that runs long leaves the stream ahead of us, and nothing in
+# the loop ever gives that time back - which is the delay that builds up on a
+# live view and never recovers.
+MAX_LAG_SECS = 2.0
 
 
 def open_stream(url):
@@ -491,6 +497,8 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
         print(f"focus -> {cam['id']} ({cam['title'][:40]})", flush=True)
 
         frames = 0
+        snaps = 0
+        base_pts = base_wall = None
         started = time.time()
         try:
             while True:
@@ -505,6 +513,23 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
+
+                # Video time should keep pace with wall time. Where it does not
+                # we are working through a backlog, so throw it away and start
+                # measuring again. Reading the newest frame every time instead
+                # sounds better and is not: these streams arrive a segment at a
+                # time, so a reader pinned to the live edge spends most of its
+                # life waiting for the next one - measured at 0.8 fps against
+                # the 8 this gets by reading steadily and snapping when it must.
+                now = time.time()
+                pts = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                if base_pts is None:
+                    base_pts, base_wall = pts, now
+                elif (now - base_wall) - (pts - base_pts) > MAX_LAG_SECS:
+                    drain_to_live(cap)
+                    base_pts = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                    base_wall = time.time()
+                    snaps += 1
 
                 try:
                     tracks, redetected = tracker.update(frame, run_yolo)
@@ -528,7 +553,8 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
             with lock:
                 state["claimed"].pop(cam["id"], None)
                 state["focus_fps"].pop(cam["id"], None)
-            print(f"focus released {cam['id']} after {frames} frames", flush=True)
+            print(f"focus released {cam['id']} after {frames} frames "
+                  f"({snaps} snaps back to live)", flush=True)
 
 
 # --- Sweep loop ------------------------------------------------------------
