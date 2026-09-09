@@ -247,6 +247,17 @@ def main():
     print(f"Recording every {args.interval}s to {args.out}, keeping {args.keep_days} days",
           flush=True)
 
+    # One pool for the life of the process, not one per round. A thread that
+    # has called into the model leaves state behind when it dies, and building
+    # eight fresh ones every ten minutes cost about 300 MB a round that never
+    # came back - the recorder reached 15 GB and was killed for it. Measured
+    # here: five rounds through a pool that is kept sat at 2300.7 MB to the
+    # decimal, where five rounds of new pools climbed 1947 -> 3509 MB.
+    #
+    # It is also the difference between 71 seconds a round and 5, because each
+    # new thread pays for its own CUDA warm-up before it can infer anything.
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+
     while True:
         started = time.time()
         now = datetime.now(timezone.utc)
@@ -259,10 +270,9 @@ def main():
             time.sleep(30)
             continue
 
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            results = list(pool.map(
-                lambda c: capture(c, args.out, day, stamp, model, args.conf, args.imgsz),
-                found))
+        results = list(pool.map(
+            lambda c: capture(c, args.out, day, stamp, model, args.conf, args.imgsz),
+            found))
         saved = [r for r in results if r[1] is None]
         vehicles = 0
         for cam_id, error, reading in results:
