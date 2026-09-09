@@ -5,15 +5,18 @@ The site shows what a camera sees now. This keeps what it saw: a frame from
 every camera on an interval, stitched into a video a day at a time, and thrown
 away after a few days.
 
-Ninety seconds is not an arbitrary interval. Each frame costs a fresh HLS
+The interval has a floor and it is not small. Each frame costs a fresh HLS
 connection - playlist, first segment, then the frame - and a round of every
-camera measured 77s at eight workers and 73s at sixteen, so the connection is
-the cost and more threads do not move it. Anything under about 90s would start
-a round before the last one finished.
+camera measured 77s at eight workers and 73s at sixteen, or 108-131s once the
+model runs on each frame as well. So the connection is the cost, more threads
+do not move it, and anything under about two minutes would start a round before
+the last one finished.
 
-That interval is too coarse to follow a vehicle, so this is not a second copy
-of the detector. It is the record of how busy each junction was, hour by hour,
-which is what the traffic history in logger/ needs to be worth anything.
+Ten minutes sits well clear of that. It is far too coarse to follow a vehicle,
+so this is not a second copy of the detector: it is the record of how busy each
+junction was, hour by hour, which is what the traffic history in logger/ needs
+to be worth anything. Longdo repaint their own road colours every five minutes,
+so a ten minute sample is the same order as the thing it sits beside.
 
     python recorder/record.py --out D:/CCTV
 
@@ -175,12 +178,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.environ.get("CCTV_DIR", "D:/CCTV"))
     ap.add_argument("--site", default="http://127.0.0.1:3000")
-    ap.add_argument("--interval", type=int, default=90,
-                    help="seconds between rounds; a round of every camera measured 73-77s")
+    ap.add_argument("--interval", type=int, default=600,
+                    help="seconds between rounds; a round of every camera takes 108-131s")
     ap.add_argument("--keep-days", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--video-fps", type=int, default=10,
-                    help="playback rate of the stitched day; 10 turns a day into about 16 minutes")
+                    help="playback rate of the stitched day; at ten minute samples "
+                         "a whole day comes to about fifteen seconds")
     ap.add_argument("--weights", default="detector/weights/yolo11x.pt")
     ap.add_argument("--conf", type=float, default=0.15)
     ap.add_argument("--imgsz", type=int, default=1280)

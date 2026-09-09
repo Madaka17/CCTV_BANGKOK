@@ -1011,10 +1011,10 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDetections();
   }, 20000);
 
-  // A round takes 75-130s, so asking much oftener than that returns the same
-  // frame with a new URL and nothing else.
+  // The recorder writes every ten minutes, so checking twice as often picks a
+  // new frame up within about five of it landing. It is a small JSON either way.
   loadRecordings();
   setInterval(() => {
     if (state.view === 'cams') loadRecordings();
-  }, 90000);
+  }, 300000);
 });
