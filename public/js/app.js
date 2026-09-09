@@ -11,11 +11,11 @@ const state = {
   players: new Map(), // camera id -> Hls instance
   view: 'cams',
   detections: new Map(), // camera id -> reading
+  recordings: new Map(), // camera id -> what recorder/record.py has kept
   showOverlay: localStorage.getItem('showOverlay') !== '0',
   // Measured against these servers: eight parallel fetches shared 2.5 Mbps in
   // total, while the streams themselves run 0.3-6.8 Mbps each. Playing all
   // nineteen at once cannot work, so only a few run at a time.
-  maxPlaying: Number(localStorage.getItem('maxPlaying') || 3),
   playing: [],        // camera ids, oldest first
   observer: null,
   detail: null,       // camera open in the detail view
@@ -77,7 +77,6 @@ function fillOrgFilter() {
 // --- Rendering -------------------------------------------------------------
 
 function render() {
-  stopAllPlayers();
 
   const grid = el('camera-grid');
 
@@ -96,19 +95,9 @@ function render() {
       <div class="relative bg-black aspect-video flex items-center justify-center">
         <!-- Absolute, like the overlays below it: as a flow child a tall frame
              stretches past the 16:9 box and the grid row goes ragged. -->
-        <video id="v-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain" muted playsinline
-               poster="${cam.image || ''}"></video>
-
-        <button data-play="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
-                class="absolute inset-0 flex items-center justify-center bg-black/45 hover:bg-black/30 transition-colors cursor-pointer">
-          <span class="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
-            <svg class="w-6 h-6 text-slate-900 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-          </span>
-        </button>
-
-        <span id="live-${cssId(cam.id)}" class="hidden absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded shadow items-center space-x-1">
-          <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span><span>LIVE</span>
-        </span>
+        <!-- What the recorder kept, not a live stream. The boxes are already
+             drawn into these frames, so there is nothing to overlay here. -->
+        <div id="rec-${cssId(cam.id)}" class="absolute inset-0"></div>
 
         <button data-fullscreen="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
                 class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-lg cursor-pointer"
@@ -132,12 +121,6 @@ function render() {
     </div>
   `).join('');
 
-  grid.querySelectorAll('[data-play]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cam = state.cameras.find(c => c.id === btn.dataset.cam);
-      if (cam) playCamera(cam);
-    });
-  });
 
   grid.querySelectorAll('[data-detail]').forEach(node => {
     node.addEventListener('click', () => {
@@ -148,23 +131,13 @@ function render() {
 
   applyFilter();
   paintCardCounts();
-  watchVisibility();
+  state.cameras.forEach(paintRecording);
 
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const video = el('v-' + btn.dataset.fullscreen);
-      const cam = state.cameras.find(c => c.id === btn.dataset.cam);
-      if (!video || !cam) return;
-
-      // Going fullscreen on a card that was not playing used to enlarge its
-      // poster: a still picture, no stream, nothing focused, and so no boxes.
-      if (!state.playing.includes(cam.id)) playCamera(cam);
-
-      // Fullscreen the wrapper, not the video: a bare video element drops the
-      // box overlay, which is the thing worth seeing up close
-      const wrap = video.parentElement;
-      if (wrap && wrap.requestFullscreen) wrap.requestFullscreen().then(() => setTimeout(redrawAllBoxes, 300));
-      else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
+      const slot = el('rec-' + btn.dataset.fullscreen);
+      if (!slot) return;
+      if (slot.requestFullscreen) slot.requestFullscreen();
     });
   });
 }
@@ -237,44 +210,6 @@ function attachPlayer(cam, prefix = 'v-') {
   state.players.set(key, hls);
 }
 
-// Only a few streams can run at once, so starting one may stop the oldest.
-function playCamera(cam) {
-  if (state.playing.includes(cam.id)) return;
-
-  while (state.playing.length >= state.maxPlaying) {
-    stopCamera(state.playing[0]);
-  }
-
-  const overlay = document.querySelector(`[data-play="${cssId(cam.id)}"]`);
-  if (overlay) overlay.classList.add('hidden');
-  const live = el('live-' + cssId(cam.id));
-  if (live) { live.classList.remove('hidden'); live.classList.add('flex'); }
-
-  state.playing.push(cam.id);
-  attachPlayer(cam);
-  updatePlayingBadge();
-  refreshFocusTarget();
-}
-
-function stopCamera(id) {
-  const hls = state.players.get(id);
-  if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete(id); }
-
-  const video = el('v-' + cssId(id));
-  if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
-
-  const overlay = document.querySelector(`[data-play="${cssId(id)}"]`);
-  if (overlay) overlay.classList.remove('hidden');
-  const live = el('live-' + cssId(id));
-  if (live) { live.classList.add('hidden'); live.classList.remove('flex'); }
-  const msg = el('m-' + cssId(id));
-  if (msg) msg.textContent = '';
-
-  state.playing = state.playing.filter(x => x !== id);
-  updatePlayingBadge();
-  refreshFocusTarget();
-}
-
 // --- Search and filter -----------------------------------------------------
 
 // Filtering hides cards instead of re-rendering the grid: a re-render tears
@@ -313,42 +248,67 @@ function setEmptyMessage(text) {
   box.classList.toggle('hidden', !text);
 }
 
-function updatePlayingBadge() {
-  const b = el('playing-count');
-  if (b) b.textContent = `เล่นอยู่ ${state.playing.length}/${state.maxPlaying}`;
-}
 
-// Start cameras as they scroll into view, and stop them when they leave, so
-// the few streams the connection can carry are the ones being looked at.
-function watchVisibility() {
-  if (state.observer) state.observer.disconnect();
+// --- Recordings ------------------------------------------------------------
+//
+// recorder/record.py samples every camera and runs the model as it goes, so
+// the frames on disk already have their boxes drawn in. A finished day is one
+// video; the day in progress is still frames, and the newest of those is the
+// closest thing to now that exists - up to a round old, so about 90 seconds.
 
-  state.observer = new IntersectionObserver((entries) => {
-    if (state.view !== 'cams') return;
-
-    entries.forEach(entry => {
-      const id = entry.target.dataset.camId;
-      const cam = state.cameras.find(c => c.id === id);
-      if (!cam) return;
-
-      if (entry.isIntersecting) {
-        if (state.playing.length < state.maxPlaying) playCamera(cam);
-      } else if (state.playing.includes(id)) {
-        stopCamera(id);
-      }
-    });
-  }, { threshold: 0.35 });
-
-  document.querySelectorAll('[data-cam-id]').forEach(node => state.observer.observe(node));
-}
-
-function stopAllPlayers() {
-  for (const hls of state.players.values()) {
-    try { hls.destroy(); } catch (e) { /* already gone */ }
+async function loadRecordings() {
+  try {
+    const res = await fetch('/api/recordings');
+    const data = await res.json();
+    state.recordings = new Map((data.cameras || []).map(c => [c.id, c]));
+    showRecorderNotice(!data.recording);
+    state.cameras.forEach(paintRecording);
+  } catch (err) {
+    /* recorder not running; the cards say so */
   }
-  state.players.clear();
-  state.playing.slice().forEach(stopCamera);
-  setFocus(null);
+}
+
+function paintRecording(cam) {
+  const slot = el('rec-' + cssId(cam.id));
+  if (!slot) return;
+  const rec = state.recordings.get(cam.id);
+
+  if (!rec) {
+    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีภาพที่บันทึกไว้</div>';
+    return;
+  }
+
+  const url = encodeURIComponent(cam.id);
+  const day = rec.days.find(d => d.video);
+  if (day) {
+    // A whole day at ten frames a second: about a minute and a half of video
+    // for twenty-four hours of road.
+    slot.innerHTML = `<video class="absolute inset-0 w-full h-full object-contain"
+      src="/api/recording/${url}/${day.day}.mp4" autoplay loop muted playsinline></video>
+      <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded">${day.day}</span>`;
+    return;
+  }
+
+  if (rec.latest) {
+    // Cache-busted on the round, so a card that is left open keeps up
+    slot.innerHTML = `<img class="absolute inset-0 w-full h-full object-contain"
+      src="/api/recording/${url}/${rec.latest}.jpg" alt="" />
+      <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded">${rec.latest.slice(11).replace(/-/g, ':')}</span>`;
+    return;
+  }
+
+  slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีภาพที่บันทึกไว้</div>';
+}
+
+function showRecorderNotice(off) {
+  let bar = el('recorder-notice');
+  if (!off) { if (bar) bar.remove(); return; }
+  if (bar) return;
+  bar = document.createElement('div');
+  bar.id = 'recorder-notice';
+  bar.className = 'detector-notice';
+  bar.textContent = 'ตัวบันทึกไม่ได้ทำงาน การ์ดจึงยังไม่มีภาพ — เปิดด้วย npm run record';
+  document.body.insertBefore(bar, document.body.firstChild);
 }
 
 // --- Vehicle detection -----------------------------------------------------
@@ -577,7 +537,6 @@ function refreshFocusTarget() {
 function openDetail(cam) {
   state.detail = cam;
   state.detailMode = 'det';
-  stopAllPlayers();
 
   el('detail-title').textContent = cam.title;
   el('detail-org').textContent = cam.org;
@@ -603,7 +562,6 @@ function closeDetail() {
   el('detail').classList.add('hidden');
   document.body.style.overflow = '';
   refreshFocusTarget();
-  if (state.view === 'cams') watchVisibility();
 }
 
 function setDetailMode(mode) {
@@ -955,17 +913,12 @@ function switchView(view) {
   document.body.classList.toggle('hide-toolbar', view !== 'cams');
 
   if (view === 'map') {
-    // 19 grid players would keep streaming behind the map
-    stopAllPlayers();
     buildMap();
     setTimeout(() => state.map && state.map.resize(), 60);
     if (state.map && state.map.isStyleLoaded()) addCameraMarkers();
     loadTrafficIndex();
   } else if (view === 'advice') {
-    stopAllPlayers();
     loadAdvice();
-  } else {
-    watchVisibility();
   }
 }
 
@@ -980,11 +933,6 @@ function startClock() {
   setInterval(tick, 1000);
 }
 
-// Players hold open connections; a hidden tab does not need them
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopAllPlayers();
-  else if (state.cameras.length) watchVisibility();
-});
 
 // So it is possible to tell at a glance whether the browser is running the
 // current code - the question that cost several rounds of debugging
@@ -1036,18 +984,6 @@ document.addEventListener('DOMContentLoaded', () => {
   el('detail-tab-live').addEventListener('click', () => setDetailMode('live'));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.detail) closeDetail(); });
 
-  const sel = el('max-playing');
-  if (sel) {
-    sel.value = String(state.maxPlaying);
-    sel.addEventListener('change', () => {
-      state.maxPlaying = Number(sel.value);
-      localStorage.setItem('maxPlaying', sel.value);
-      while (state.playing.length > state.maxPlaying) stopCamera(state.playing[0]);
-      updatePlayingBadge();
-      watchVisibility();
-    });
-  }
-  updatePlayingBadge();
 
   const overlayBtn = el('btn-overlay');
   if (overlayBtn) {
@@ -1074,4 +1010,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.view !== 'cams') return;
     loadDetections();
   }, 20000);
+
+  // A round takes 75-130s, so asking much oftener than that returns the same
+  // frame with a new URL and nothing else.
+  loadRecordings();
+  setInterval(() => {
+    if (state.view === 'cams') loadRecordings();
+  }, 90000);
 });

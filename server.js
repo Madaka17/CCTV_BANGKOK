@@ -826,6 +826,85 @@ const PLACEHOLDER_SVG = Buffer.from(
   'utf8'
 );
 
+// Where recorder/record.py writes. Not under the working copy: this one is
+// inside a OneDrive sync root, and an archive there would be uploaded.
+const RECORDINGS_DIR = process.env.CCTV_DIR || 'D:/CCTV';
+
+// A camera id is a path segment here, so it has to be one that cannot climb
+// out of the archive directory. Dots are allowed - dates and .mp4 need them -
+// so ".." clears this pattern and is rejected on its own below.
+const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
+
+function insideArchive(parts) {
+  if (!parts.length) return null;
+  for (const part of parts) {
+    if (!SAFE_SEGMENT.test(part) || part === '.' || part === '..') return null;
+  }
+  // Resolve and compare against the archive root itself. Checking against
+  // root + camera is no check at all when the camera segment is "..".
+  const base = path.resolve(RECORDINGS_DIR);
+  const file = path.resolve(base, ...parts);
+  return file.startsWith(base + path.sep) ? file : null;
+}
+
+function listRecordings() {
+  let cameras;
+  try {
+    cameras = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true });
+  } catch (err) {
+    return { dir: RECORDINGS_DIR, recording: false, cameras: [] };
+  }
+
+  const out = [];
+  for (const entry of cameras) {
+    if (!entry.isDirectory() || !SAFE_SEGMENT.test(entry.name)) continue;
+    const dir = path.join(RECORDINGS_DIR, entry.name);
+    const days = [];
+    let latest = null;
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (item.isFile() && item.name.endsWith('.mp4')) {
+        days.push({ day: item.name.slice(0, -4), video: true });
+      } else if (item.isDirectory()) {
+        const shots = fs.readdirSync(path.join(dir, item.name)).filter(f => f.endsWith('.jpg'));
+        if (!shots.length) continue;
+        days.push({ day: item.name, video: false, frames: shots.length });
+        const newest = shots.sort()[shots.length - 1];
+        latest = `${item.name}/${newest.slice(0, -4)}`;
+      }
+    }
+    if (days.length) out.push({ id: entry.name, days: days.sort((a, b) => a.day < b.day ? 1 : -1), latest });
+  }
+  return { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
+}
+
+function sendRecording(res, rest) {
+  const parts = rest.split('/').filter(Boolean);
+  const file = parts.length >= 2 ? insideArchive(parts) : null;
+  if (!file) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('bad path');
+    return;
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch (err) {
+    res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'no recording' }));
+    return;
+  }
+
+  const mp4 = file.endsWith('.mp4');
+  res.writeHead(200, {
+    'Content-Type': mp4 ? 'video/mp4' : 'image/jpeg',
+    'Content-Length': stat.size,
+    // A finished day never changes; a frame from today is replaced every round
+    'Cache-Control': mp4 ? 'public, max-age=86400' : 'no-store'
+  });
+  fs.createReadStream(file).pipe(res);
+}
+
 function sendPlaceholder(res) {
   res.writeHead(200, {
     'Content-Type': 'image/svg+xml; charset=utf-8',
@@ -1034,6 +1113,22 @@ const requestHandler = async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // What recorder/record.py kept. A day in progress is frames, a finished one
+  // is a video, and both already have the boxes drawn on them - so this hands
+  // the files over and the page has nothing to overlay.
+  //
+  // The archive lives outside the working copy, which sits under a OneDrive
+  // sync root, so it is reached by path rather than served from public/.
+  if (pathname === '/api/recordings' || pathname.startsWith('/api/recording/')) {
+    if (pathname === '/api/recordings') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(listRecordings(), null, 2));
+      return;
+    }
+    sendRecording(res, pathname.slice('/api/recording/'.length));
     return;
   }
 
