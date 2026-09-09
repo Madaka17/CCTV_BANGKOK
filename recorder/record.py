@@ -108,10 +108,15 @@ def stitch(cam_dir, day, fps, drop_frames):
     temporary name still has to end in .mp4: OpenCV picks the container from
     the extension, and a ".part" suffix leaves the writer unable to open at all.
 
-    Measured on these cameras, mp4v holds 18% of what the same frames cost as
-    separate JPEGs. H.264 would roughly halve that again where the machine has
-    an encoder; OpenCV falls back to writing almost nothing useful when it does
-    not, so this stays on the codec that is always there.
+    H.264, because no browser plays anything else here. mp4v was the first
+    choice and it was wrong: OpenCV reads it back happily, which is how it got
+    through review, but MPEG-4 Part 2 is not a codec a browser will play in a
+    video element - the cards were being handed a file they could only show as
+    black. It needs openh264-2.5.0-win64.dll beside cv2; see the README.
+
+    It is a third of the size as well. Twenty frames measured 1.08 MB as H.264
+    against 3.54 MB as mp4v, and mp4v was already 18% of what the same frames
+    cost kept as separate JPEGs.
     """
     folder = os.path.join(cam_dir, day)
     shots = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
@@ -126,7 +131,7 @@ def stitch(cam_dir, day, fps, drop_frames):
     height, width = first.shape[:2]
     path = os.path.join(cam_dir, f"{day}.mp4")
     partial = os.path.join(cam_dir, f"{day}.writing.mp4")
-    writer = cv2.VideoWriter(partial, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    writer = cv2.VideoWriter(partial, cv2.VideoWriter_fourcc(*"avc1"), fps, (width, height))
     if not writer.isOpened():
         # It may still have created the file before giving up
         if os.path.exists(partial):
