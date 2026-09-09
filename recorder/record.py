@@ -32,9 +32,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "detector"))
-from detect import grab_frame  # noqa: E402  (needs the path above)
+from detect import MOTORCYCLE_CONF, detect, grab_frame, predict  # noqa: E402
+from ultralytics import YOLO  # noqa: E402
 
 
 def human(n):
@@ -47,16 +49,46 @@ def cameras(site):
     return data if isinstance(data, list) else (data.get("cameras") or data.get("list") or [])
 
 
-def capture(cam, out_dir, day, stamp):
+def capture(cam, out_dir, day, stamp, model, conf, imgsz):
+    """One frame, with what was on the road drawn onto it.
+
+    The boxes are burnt into the stored frame rather than kept beside it. The
+    stitched day is then watchable as it is, with no second file to keep in
+    step and nothing for the page to draw - and a frame this far apart from its
+    neighbours is only ever going to be looked at, not re-processed.
+    """
     try:
         frame = grab_frame(cam["hls"])
     except Exception as exc:
-        return cam["id"], str(exc)[:60]
+        return cam["id"], str(exc)[:60], None
+
+    try:
+        counts, total, annotated, _ = detect(model, frame, conf, imgsz)
+    except Exception as exc:
+        return cam["id"], f"detect: {str(exc)[:50]}", None
+
     folder = os.path.join(out_dir, cam["id"], day)
     os.makedirs(folder, exist_ok=True)
-    cv2.imwrite(os.path.join(folder, f"{stamp}.jpg"), frame,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-    return cam["id"], None
+    with open(os.path.join(folder, f"{stamp}.jpg"), "wb") as fh:
+        fh.write(annotated if annotated else b"")
+    return cam["id"], None, {"at": stamp, "total": total, "counts": counts}
+
+
+def log_counts(out_dir, cam_id, day, reading):
+    """One line per frame, so the day is a table as well as a video."""
+    path = os.path.join(out_dir, cam_id, f"{day}.csv")
+    header = "at,total,car,motorcycle,bus,truck"
+    counts = reading["counts"]
+    row = ",".join(str(v) for v in (
+        reading["at"], reading["total"],
+        counts.get("car", 0), counts.get("motorcycle", 0),
+        counts.get("bus", 0), counts.get("truck", 0),
+    ))
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as fh:
+        if new:
+            print(header, file=fh)
+        print(row, file=fh)
 
 
 def stitch(cam_dir, day, fps):
@@ -149,10 +181,18 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--video-fps", type=int, default=10,
                     help="playback rate of the stitched day; 10 turns a day into about 16 minutes")
+    ap.add_argument("--weights", default="detector/weights/yolo11x.pt")
+    ap.add_argument("--conf", type=float, default=0.15)
+    ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--once", action="store_true", help="one round, then stop")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    print(f"Loading {args.weights} ...", flush=True)
+    model = YOLO(args.weights)
+    # Same reason as the detector: the first real frame otherwise pays for the
+    # fp16 cast and for cuDNN picking its algorithms.
+    predict(model, np.zeros((720, 1280, 3), dtype=np.uint8), MOTORCYCLE_CONF, args.imgsz)
     print(f"Recording every {args.interval}s to {args.out}, keeping {args.keep_days} days",
           flush=True)
 
@@ -169,8 +209,15 @@ def main():
             continue
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            results = list(pool.map(lambda c: capture(c, args.out, day, stamp), found))
+            results = list(pool.map(
+                lambda c: capture(c, args.out, day, stamp, model, args.conf, args.imgsz),
+                found))
         saved = [r for r in results if r[1] is None]
+        vehicles = 0
+        for cam_id, error, reading in results:
+            if reading:
+                log_counts(args.out, cam_id, day, reading)
+                vehicles += reading["total"]
 
         # Prune first: a day past the window is about to go, and stitching it
         # would be work done only to delete the result.
@@ -181,7 +228,7 @@ def main():
             print(f"  stitched {cam_id}/{d}: {frames} frames -> {human(size)}", flush=True)
 
         print(f"[{now.strftime('%H:%M:%S')}] {len(saved)}/{len(found)} cameras, "
-              f"{time.time() - started:.0f}s", flush=True)
+              f"{vehicles} vehicles, {time.time() - started:.0f}s", flush=True)
 
         if args.once:
             return
