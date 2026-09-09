@@ -130,6 +130,17 @@ def ensure_cameras(site):
 # the stream here takes under half a second.
 
 STREAM_TIMEOUT_MS = 15000
+# A grab that returns this fast came out of ffmpeg's buffer; one that waits
+# longer went to the wire, which means the buffer is empty and we are live.
+LIVE_EDGE_SECS = 0.030
+# Draining is not free: these servers feed the backlog over at anywhere from
+# 1.6x to 34x real time, so the slowest camera's 9.5s of it costs 5.9s to throw
+# away - worse than the staleness. Half a second clears the backlog outright on
+# most cameras and takes the top off the rest. It bounds the buffered part only:
+# the grab that finally reaches the wire waits for the next segment however long
+# that takes, which measured as up to 1.9s on these streams. That grab is the
+# one worth paying for - it is the frame that is actually live.
+DRAIN_BUDGET_SECS = 0.5
 
 
 def open_stream(url):
@@ -147,13 +158,36 @@ def open_stream(url):
     return cap
 
 
+def drain_to_live(cap):
+    """Throw away the backlog ffmpeg buffered at open, leaving the newest frame.
+
+    Opening one of these HLS streams hands over 3-3.6s of video that has already
+    happened, so the first frame read is that many seconds stale. CAP_PROP_BUFFERSIZE
+    is the usual cure but the FFmpeg backend does not implement it - set() returns
+    False and get() reads back -1 - so drop the backlog by grabbing without
+    decoding, and stop at whichever comes first: a grab that waits for the wire,
+    or the budget running out.
+    """
+    deadline = time.time() + DRAIN_BUDGET_SECS
+    grabbed = False
+    while True:
+        started = time.time()
+        if not cap.grab():
+            return grabbed
+        grabbed = True
+        if time.time() - started > LIVE_EDGE_SECS or time.time() >= deadline:
+            return True
+
+
 def grab_frame(hls_url):
-    """One frame from a live stream."""
+    """One frame from a live stream, as close to now as the stream allows."""
     cap = open_stream(hls_url)
     if cap is None:
         raise RuntimeError("could not open stream")
     try:
-        ok, frame = cap.read()
+        # retrieve(), not read(): the frame the last grab waited for is the
+        # live one, and reading again would throw it away to fetch the next.
+        ok, frame = cap.retrieve() if drain_to_live(cap) else (False, None)
     finally:
         cap.release()
     if not ok or frame is None:
@@ -448,6 +482,9 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
         # to decode frames nothing looks at.
         native = cap.get(cv2.CAP_PROP_FPS)
         skip = max(0, round((native if native > 0 else 25) / fps) - 1)
+        # The skip loop below holds the live edge once it is there, but it
+        # starts 3s behind it: that is how much video the open buffered.
+        drain_to_live(cap)
         print(f"focus -> {cam['id']} ({cam['title'][:40]})", flush=True)
 
         frames = 0
