@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -148,7 +149,20 @@ def stitch(cam_dir, day, fps, drop_frames):
             os.remove(partial)
         return None
 
-    os.replace(partial, path)
+    # Windows will not let the finished file take the place of one another
+    # process has open, and the page loops these videos, so the server has the
+    # old one open a good part of the time. Wait for a gap; if there is not one,
+    # keep the video that is already there and try again next round.
+    for attempt in range(6):
+        try:
+            os.replace(partial, path)
+            break
+        except PermissionError:
+            if attempt == 5:
+                os.remove(partial)
+                return None
+            time.sleep(0.5)
+
     if drop_frames:
         shutil.rmtree(folder, ignore_errors=True)
     return path, written, os.path.getsize(path)
@@ -214,7 +228,15 @@ def main():
     ap.add_argument("--conf", type=float, default=0.15)
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--once", action="store_true", help="one round, then stop")
+    ap.add_argument("--stitch-only", action="store_true",
+                    help="rebuild the videos and exit; how the loop runs the stitch")
     args = ap.parse_args()
+
+    if args.stitch_only:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for cam_id, d, frames, size in restitch(args.out, today, args.video_fps):
+            print(f"  closed {cam_id}/{d}: {frames} frames -> {human(size)}")
+        return
 
     os.makedirs(args.out, exist_ok=True)
     print(f"Loading {args.weights} ...", flush=True)
@@ -253,8 +275,21 @@ def main():
         freed = prune(args.out, args.keep_days, day)
         if freed:
             print(f"  pruned {human(freed)} past {args.keep_days} days", flush=True)
-        for cam_id, d, frames, size in restitch(args.out, day, args.video_fps):
-            print(f"  closed {cam_id}/{d}: {frames} frames -> {human(size)}", flush=True)
+
+        # Rebuilding the videos in this process cost it about 600 MB a round
+        # that it never gave back - it reached 15 GB and was killed. The work
+        # is reading every frame of the day back through OpenCV, and whatever
+        # holds on to that is not worth chasing when a child process hands it
+        # all back on exit. This is the same file, run for the stitch alone.
+        child = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--stitch-only",
+             "--out", args.out, "--video-fps", str(args.video_fps)],
+            capture_output=True, text=True, timeout=600)
+        for line in child.stdout.splitlines():
+            print(line, flush=True)
+        if child.returncode:
+            print(f"  stitch failed ({child.returncode}): "
+                  f"{child.stderr.strip()[-200:]}", flush=True)
 
         print(f"[{now.strftime('%H:%M:%S')}] {len(saved)}/{len(found)} cameras, "
               f"{vehicles} vehicles, {time.time() - started:.0f}s", flush=True)
