@@ -642,9 +642,19 @@ const MIME_TYPES = {
 const VIDEO_CATALOGUE_URL = 'https://camera.longdo.com/feed/?command=json';
 // detector/detect.py, when it is running
 const DETECTOR_URL = (process.env.DETECTOR_URL || 'http://127.0.0.1:5056').replace(/\/+$/, '');
-// Titles are prefixed with the province, so that is the reliable filter -
-// coordinates alone drag in Nonthaburi and Pathum Thani.
+// The province in the title used to be the filter. It is accurate, but it stops
+// at the city line, and the roads a Bangkok driver queues on do not: this box
+// adds 11 cameras titled for a neighbour - Kanchanaphisek at Bang Yai and
+// Chaeng Watthana (Nonthaburi, 4), Bang Na-Bang Pakong km 6 and Ratburana-Phra
+// Samut Chedi (Samut Prakan, 4), Krathum Lom-Phutthamonthon (Nakhon Pathom, 2)
+// and Lam Luk Ka km 9 (Pathum Thani, 1). The last two provinces are the price:
+// they are commuter corridors rather than city streets, and the earlier comment
+// here warned about exactly them. Tighten the box if their cards read as noise.
+// The prefix is still how a Bangkok title gets tidied up.
+const BKK_BOX = { south: 13.49, north: 13.96, west: 100.32, east: 100.94 };
 const BKK_PREFIX = '(\u0e01\u0e23\u0e38\u0e07\u0e40\u0e17\u0e1e\u0e21\u0e2b\u0e32\u0e19\u0e04\u0e23)';
+// Anything else keeps its province, so a card can say it is not in the city.
+const PROVINCE_PREFIX = /^\([^)]*\)\s*/;
 // Drop cameras whose road IS an expressway, but keep city streets that merely
 // sit at a junction with one - "\u0e16.\u0e1e\u0e23\u0e30\u0e23\u0e32\u0e214 \u0e41\u0e22\u0e01\u0e17\u0e32\u0e07\u0e14\u0e48\u0e27\u0e19..." is Rama IV, a street.
 const EXPRESSWAY_START = /^(\u0e17\u0e32\u0e07\u0e1e\u0e34\u0e40\u0e28\u0e29|\u0e17\u0e32\u0e07\u0e14\u0e48\u0e27\u0e19|\u0e21\u0e2d\u0e40\u0e15\u0e2d\u0e23\u0e4c\u0e40\u0e27\u0e22\u0e4c|motorway)/i;
@@ -677,9 +687,12 @@ async function loadVideoCameras() {
         image: c.imgurl || null
       }))
       .filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lng))
-      .filter(c => c.title.startsWith(BKK_PREFIX))
-      .map(c => ({ ...c, title: c.title.slice(BKK_PREFIX.length).trim() }))
-      .filter(c => !EXPRESSWAY_START.test(c.title));
+      .filter(c => c.lat >= BKK_BOX.south && c.lat <= BKK_BOX.north
+                && c.lng >= BKK_BOX.west && c.lng <= BKK_BOX.east)
+      .map(c => c.title.startsWith(BKK_PREFIX)
+        ? { ...c, title: c.title.slice(BKK_PREFIX.length).trim() }
+        : c)
+      .filter(c => !EXPRESSWAY_START.test(c.title.replace(PROVINCE_PREFIX, '')));
 
     // The catalogue keeps cameras that have been taken down, and a dead one
     // renders as a black tile. Ask each stream once per refresh instead.
@@ -694,7 +707,7 @@ async function loadVideoCameras() {
     const live = alive.filter(Boolean);
 
     videoCameras = { list: live, fetchedAt: Date.now(), error: null };
-    console.log(`Loaded ${live.length} live video cameras in Bangkok (${list.length - live.length} offline)`);
+    console.log(`Loaded ${live.length} live video cameras around Bangkok (${list.length - live.length} offline)`);
   } catch (err) {
     // Keep whatever was loaded before rather than emptying the view
     videoCameras = { ...videoCameras, fetchedAt: Date.now(), error: String(err.message || err) };
