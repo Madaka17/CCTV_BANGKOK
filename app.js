@@ -1011,10 +1011,12 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDetections();
   }, 20000);
 
-  // The recorder writes every ten minutes, so checking twice as often picks a
-  // new frame up within about five of it landing. It is a small JSON either way.
+  // A round finishes whenever it finishes, so matching the recorder's ten
+  // minutes would leave a new frame sitting unseen for most of that. Asking
+  // every thirty seconds shows it within half a minute; the server holds the
+  // answer for fifteen so this costs a cached reply, not a walk of the archive.
   loadRecordings();
   setInterval(() => {
     if (state.view === 'cams') loadRecordings();
-  }, 300000);
+  }, 30000);
 });

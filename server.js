@@ -847,11 +847,22 @@ function insideArchive(parts) {
   return file.startsWith(base + path.sep) ? file : null;
 }
 
+// The page asks every thirty seconds so a new frame shows up soon after the
+// round that wrote it, but the archive only changes every ten minutes. Holding
+// the answer briefly keeps that from walking 29 directories per viewer per ask.
+let recordingsCache = { at: 0, data: null };
+const RECORDINGS_TTL_MS = 15 * 1000;
+
 function listRecordings() {
+  if (recordingsCache.data && Date.now() - recordingsCache.at < RECORDINGS_TTL_MS) {
+    return recordingsCache.data;
+  }
+
   let cameras;
   try {
     cameras = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true });
   } catch (err) {
+    // Not cached: the recorder may be starting, and the next ask should look
     return { dir: RECORDINGS_DIR, recording: false, cameras: [] };
   }
 
@@ -874,7 +885,9 @@ function listRecordings() {
     }
     if (days.length) out.push({ id: entry.name, days: days.sort((a, b) => a.day < b.day ? 1 : -1), latest });
   }
-  return { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
+  const data = { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
+  recordingsCache = { at: Date.now(), data };
+  return data;
 }
 
 function sendRecording(res, rest) {
