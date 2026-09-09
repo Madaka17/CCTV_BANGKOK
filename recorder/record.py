@@ -94,8 +94,18 @@ def log_counts(out_dir, cam_id, day, reading):
         print(row, file=fh)
 
 
-def stitch(cam_dir, day, fps):
-    """A finished day's frames as one video, then the frames go.
+def stitch(cam_dir, day, fps, drop_frames):
+    """The day's frames as one video.
+
+    Rebuilt every round rather than only when the day is over, so a card shows
+    moving traffic from the first few frames on instead of a still picture
+    until midnight. Re-encoding the day so far costs a read of each frame, and
+    a day tops out at 144 of them.
+
+    The video is written beside the real name and moved into place, because the
+    web server may be streaming the old one to somebody while this runs. The
+    temporary name still has to end in .mp4: OpenCV picks the container from
+    the extension, and a ".part" suffix leaves the writer unable to open at all.
 
     Measured on these cameras, mp4v holds 18% of what the same frames cost as
     separate JPEGs. H.264 would roughly halve that again where the machine has
@@ -105,7 +115,8 @@ def stitch(cam_dir, day, fps):
     folder = os.path.join(cam_dir, day)
     shots = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
     if not shots:
-        shutil.rmtree(folder, ignore_errors=True)
+        if drop_frames:
+            shutil.rmtree(folder, ignore_errors=True)
         return None
 
     first = cv2.imread(os.path.join(folder, shots[0]))
@@ -113,8 +124,12 @@ def stitch(cam_dir, day, fps):
         return None
     height, width = first.shape[:2]
     path = os.path.join(cam_dir, f"{day}.mp4")
-    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    partial = os.path.join(cam_dir, f"{day}.writing.mp4")
+    writer = cv2.VideoWriter(partial, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
+        # It may still have created the file before giving up
+        if os.path.exists(partial):
+            os.remove(partial)
         return None
 
     written = 0
@@ -128,15 +143,23 @@ def stitch(cam_dir, day, fps):
         written += 1
     writer.release()
 
-    if written:
+    if not written:
+        if os.path.exists(partial):
+            os.remove(partial)
+        return None
+
+    os.replace(partial, path)
+    if drop_frames:
         shutil.rmtree(folder, ignore_errors=True)
-        return path, written, os.path.getsize(path)
-    os.remove(path)
-    return None
+    return path, written, os.path.getsize(path)
 
 
-def close_finished_days(out_dir, today, fps):
-    """Stitch every day that is over. A day still being written is left alone."""
+def restitch(out_dir, today, fps):
+    """Rebuild every day's video.
+
+    Today's is rebuilt in place and keeps its frames, since more are coming. A
+    day that is over is rebuilt one last time and gives its frames up.
+    """
     made = []
     for cam_id in sorted(os.listdir(out_dir)):
         cam_dir = os.path.join(out_dir, cam_id)
@@ -144,10 +167,11 @@ def close_finished_days(out_dir, today, fps):
             continue
         for day in sorted(os.listdir(cam_dir)):
             day_dir = os.path.join(cam_dir, day)
-            if not os.path.isdir(day_dir) or day >= today:
+            if not os.path.isdir(day_dir):
                 continue
-            result = stitch(cam_dir, day, fps)
-            if result:
+            finished = day < today
+            result = stitch(cam_dir, day, fps, drop_frames=finished)
+            if result and finished:
                 made.append((cam_id, day, result[1], result[2]))
     return made
 
@@ -162,6 +186,7 @@ def prune(out_dir, keep_days, today):
             continue
         for name in sorted(os.listdir(cam_dir)):
             day = name[:-4] if name.endswith(".mp4") else name
+            # ".writing.mp4" leaves a longer stem, so it never matches a date
             if len(day) != 10 or day >= cutoff:
                 continue
             path = os.path.join(cam_dir, name)
@@ -228,8 +253,8 @@ def main():
         freed = prune(args.out, args.keep_days, day)
         if freed:
             print(f"  pruned {human(freed)} past {args.keep_days} days", flush=True)
-        for cam_id, d, frames, size in close_finished_days(args.out, day, args.video_fps):
-            print(f"  stitched {cam_id}/{d}: {frames} frames -> {human(size)}", flush=True)
+        for cam_id, d, frames, size in restitch(args.out, day, args.video_fps):
+            print(f"  closed {cam_id}/{d}: {frames} frames -> {human(size)}", flush=True)
 
         print(f"[{now.strftime('%H:%M:%S')}] {len(saved)}/{len(found)} cameras, "
               f"{vehicles} vehicles, {time.time() - started:.0f}s", flush=True)

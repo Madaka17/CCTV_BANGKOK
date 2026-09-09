@@ -870,20 +870,25 @@ function listRecordings() {
   for (const entry of cameras) {
     if (!entry.isDirectory() || !SAFE_SEGMENT.test(entry.name)) continue;
     const dir = path.join(RECORDINGS_DIR, entry.name);
-    const days = [];
+    // The day in progress has both: a folder of frames and a video rebuilt
+    // from them each round. One entry per day, so it is not listed twice.
+    const byDay = new Map();
     let latest = null;
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
       if (item.isFile() && item.name.endsWith('.mp4')) {
-        days.push({ day: item.name.slice(0, -4), video: true });
+        const day = item.name.slice(0, -4);
+        byDay.set(day, { ...(byDay.get(day) || { day }), video: true });
       } else if (item.isDirectory()) {
         const shots = fs.readdirSync(path.join(dir, item.name)).filter(f => f.endsWith('.jpg'));
         if (!shots.length) continue;
-        days.push({ day: item.name, video: false, frames: shots.length });
+        const day = item.name;
+        byDay.set(day, { ...(byDay.get(day) || { day, video: false }), frames: shots.length });
         const newest = shots.sort()[shots.length - 1];
-        latest = `${item.name}/${newest.slice(0, -4)}`;
+        latest = `${day}/${newest.slice(0, -4)}`;
       }
     }
-    if (days.length) out.push({ id: entry.name, days: days.sort((a, b) => a.day < b.day ? 1 : -1), latest });
+    const days = [...byDay.values()].sort((a, b) => a.day < b.day ? 1 : -1);
+    if (days.length) out.push({ id: entry.name, days, latest });
   }
   const data = { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
   recordingsCache = { at: Date.now(), data };
