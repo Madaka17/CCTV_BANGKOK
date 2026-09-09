@@ -10,7 +10,9 @@
     "share:ts": "tailscale funnel --bg 3000",
     "py": "python3 server.py",
     "log:traffic": "node logger/log-traffic.js",
-    "log:once": "node logger/log-traffic.js --once"
+    "log:once": "node logger/log-traffic.js --once",
+    "record": "detector/.venv/Scripts/python.exe recorder/record.py",
+    "record:once": "detector/.venv/Scripts/python.exe recorder/record.py --once"
   },
   "keywords": [
     "cctv",
