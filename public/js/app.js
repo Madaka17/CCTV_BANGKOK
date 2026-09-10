@@ -60,6 +60,7 @@ async function loadCameras() {
     state.cameras = data.cameras || [];
     fillOrgFilter();
     if (state.view === 'map') { addCameraMarkers(); } else { render(); }
+    refreshFocusTarget();
   } catch (err) {
     grid.innerHTML = '';
     setEmptyMessage(`โหลดรายการกล้องไม่สำเร็จ (${err.message})`);
@@ -699,24 +700,39 @@ const STALE_AFTER = 120;
 // the same moment: when the detections landed first, render() wiped these
 // lines and a new visitor saw no counts until the next poll, twenty seconds on.
 function paintCardCounts() {
-  // Wipe first: a reading that has just aged out is gone from the map, and
-  // painting only what is left would leave its old line on the card forever.
   state.cameras.forEach(cam => {
     const box = el('c-' + cssId(cam.id));
-    if (box && !state.detections.has(cam.id)) box.textContent = '';
-  });
-
-  state.detections.forEach(d => {
-    const box = el('c-' + cssId(d.id));
     if (!box) return;
-    if (d.total === null) {
-      box.textContent = '';
+
+    const d = state.detections.get(cam.id);
+    const rec = state.recordings.get(cam.id);
+
+    // 1. Live detection reading with count and speed
+    if (d && d.total !== null) {
+      const parts = Object.entries(d.counts || {})
+        .filter(([_, n]) => n > 0)
+        .map(([k, n]) => `${LABELS[k] || k} ${n}`)
+        .join(' · ');
+      const spd = d.area_speed;
+      const spdBadge = spd && spd.avg_px_s !== undefined
+        ? ` · <span class="font-bold text-sky-500 dark:text-sky-400">⚡ ${spd.avg_px_s} px/s</span> <span class="text-slate-500">(${spd.status_th || spd.status})</span>`
+        : '';
+      box.innerHTML = `<span class="font-bold text-emerald-600 dark:text-emerald-400">🚗 ${d.total} คัน</span>${parts ? ` <span class="text-slate-500 text-[10px]">(${parts})</span>` : ''}${spdBadge}`;
       return;
     }
-    const parts = Object.entries(d.counts)
-      .map(([k, n]) => `${LABELS[k] || k} ${n}`)
-      .join(' · ');
-    box.textContent = d.total ? `${d.total} คัน — ${parts}` : 'ไม่พบรถ';
+
+    // 2. Count from 10-minute clip CSV in Drive D
+    if (rec && rec.lastCount && rec.lastCount.total !== null) {
+      const lc = rec.lastCount;
+      const parts = Object.entries(lc.counts || {})
+        .filter(([_, n]) => n > 0)
+        .map(([k, n]) => `${LABELS[k] || k} ${n}`)
+        .join(' · ');
+      box.innerHTML = `<span class="font-semibold text-emerald-600 dark:text-emerald-400">🚗 ${lc.total} คัน</span>${parts ? ` <span class="text-slate-400 text-[10px]">(${parts})</span>` : ''} <span class="text-[10px] text-slate-400 dark:text-slate-500">· 10 นาทีย้อนหลัง</span>`;
+      return;
+    }
+
+    box.textContent = '';
   });
 }
 
@@ -760,8 +776,6 @@ function drawBoxes(camId, overlay, video) {
   if (!state.showOverlay) { overlay.innerHTML = ''; return; }
 
   if (!boxes.length) {
-    // The first pass takes a moment after the stream opens, and a bare picture
-    // in the meantime reads as the detector being broken
     overlay.innerHTML = `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
         ${state.focusId === camId ? 'กำลังเริ่มตรวจจับ...' : 'ยังไม่ได้ตรวจจับกล้องนี้'}
       </div>`;
@@ -770,39 +784,52 @@ function drawBoxes(camId, overlay, video) {
 
   const r = pictureRect(video);
   const age = Math.round(Date.now() / 1000 - reading.at);
+  const spd = reading.area_speed;
+  const spdVal = spd && spd.avg_px_s !== undefined ? spd.avg_px_s : 0;
+  const spdStatus = spd ? (spd.status_th || spd.status) : '';
+  const spdColor = spd && spd.status === 'jam' ? '#f43f5e' : (spd && spd.status === 'slow' ? '#fbbf24' : '#34d399');
 
-  // Inline styles rather than utility classes: this markup is injected after
-  // load, and positioning the overlay must not depend on a CDN picking it up.
   overlay.innerHTML = `
     <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" preserveAspectRatio="none">
       ${boxes.map(b => {
         const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
         const w = b.w * r.w, h = b.h * r.h;
         const c = BOX_COLOURS[b.k] || '#54C00C';
-        // The id comes from the tracker, so the same vehicle keeps its number
-        // from frame to frame - which is what shows the tracking is working
-        const tag = b.id === undefined ? '' :
-          `<text x="${(x + 2).toFixed(1)}" y="${(y - 3).toFixed(1)}" fill="${c}"
-                 font-size="11" font-family="monospace"
-                 style="paint-order:stroke;stroke:#000;stroke-width:3">#${b.id}</text>`;
+        const typeName = LABELS[b.k] || b.k;
+        const speedText = b.spd !== undefined && b.spd > 0 ? `${b.spd} px/s` : (b.stp ? 'จอดนิ่ง' : '');
+        const labelText = `#${b.id ?? ''} ${typeName} ${speedText}`.trim();
+        const tagWidth = Math.max(65, labelText.length * 6.5 + 14);
+
+        const tag = (b.id === undefined && !typeName) ? '' :
+          `<g>
+             <rect x="${x.toFixed(1)}" y="${Math.max(0, y - 16).toFixed(1)}" width="${tagWidth.toFixed(0)}" height="15" fill="rgba(15,23,42,0.88)" rx="3" />
+             <text x="${(x + 4).toFixed(1)}" y="${Math.max(11, y - 4).toFixed(1)}" fill="${c}"
+                   font-size="10" font-family="system-ui, sans-serif" font-weight="bold">${labelText}</text>
+           </g>`;
+
         return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"
                  fill="none" stroke="${c}" stroke-width="2" rx="2" />${tag}`;
       }).join('')}
     </svg>
-    <div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#fff;font-size:10px">
-      ${boxes.length} คัน · ${age < 3 ? 'สด' : 'ตรวจเมื่อ ' + (age < 60 ? age + ' วิ' : Math.round(age / 60) + ' นาที') + 'ที่แล้ว'}
+    <div style="position:absolute;bottom:8px;left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.15);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;box-shadow:0 4px 6px -1px rgba(0,0,0,.5);pointer-events:none">
+      <span style="color:#38bdf8;font-weight:bold">🚗 ${boxes.length} คัน</span>
+      ${spd ? `<span style="color:#64748b">|</span><span style="color:${spdColor};font-weight:bold">⚡ ${spdVal} px/s (${spdStatus})</span>` : ''}
+      <span style="color:#64748b;font-size:10px">(${age < 3 ? 'สด' : age + ' วิที่แล้ว'})</span>
     </div>`;
 }
 
-// Only the camera someone has opened. The grid used to draw boxes on every
-// playing card, and that is what forced the detector to sweep all of them:
-// twenty streams and twenty YOLO passes a round to decorate thumbnails too
-// small to read a box off. One camera at a time is also the only way the
-// tracker reaches its full rate.
 function redrawAllBoxes() {
-  if (state.detail && state.detailMode === 'live') {
+  if (state.detail) {
     drawBoxes(state.detail.id, el('detail-overlay'), el('detail-video'));
   }
+  state.detections.forEach((reading, camId) => {
+    const cardOverlay = el('o-' + cssId(camId));
+    const cardSlot = el('rec-' + cssId(camId));
+    const cardVideo = cardSlot && cardSlot.querySelector('video');
+    if (cardOverlay && cardVideo) {
+      drawBoxes(camId, cardOverlay, cardVideo);
+    }
+  });
 }
 
 // --- Realtime focus --------------------------------------------------------
@@ -839,11 +866,7 @@ function setFocus(id) {
         state.focusFps = data.fps || 0;
         redrawAllBoxes();
         if (state.detail && state.detail.id === id) renderDetailCounts(state.detail, reading);
-        const line = el('c-' + cssId(id));
-        if (line && reading.total !== null) {
-          const parts = Object.entries(reading.counts).map(([k, n]) => `${LABELS[k] || k} ${n}`).join(' · ');
-          line.textContent = reading.total ? `${reading.total} คัน — ${parts}` : 'ไม่พบรถ';
-        }
+        paintCardCounts();
       }
       updateFocusBadge();
     } catch (err) { /* detector off */ }
@@ -860,10 +883,18 @@ function updateFocusBadge() {
   if (on) b.textContent = `ตรวจจับสด ${state.focusFps.toFixed(1)} fps`;
 }
 
-// The open camera, or nothing. Closing the detail releases the detector, so a
-// grid left open on screen costs it nothing.
+// Focus on the open camera if viewing detail, otherwise focus on first watchlist camera or first camera.
 function refreshFocusTarget() {
-  setFocus(state.detail ? state.detail.id : null);
+  if (state.detail) {
+    setFocus(state.detail.id);
+  } else if (state.watchlist && state.watchlist.size > 0) {
+    const firstWatched = Array.from(state.watchlist)[0];
+    setFocus(firstWatched);
+  } else if (state.cameras && state.cameras.length > 0) {
+    setFocus(state.cameras[0].id);
+  } else {
+    setFocus(null);
+  }
 }
 
 // --- Camera detail ---------------------------------------------------------
@@ -1000,6 +1031,19 @@ function renderDetailCounts(cam, reading) {
   const note = el('detail-note');
 
   if (!reading || reading.total === null) {
+    const rec = state.recordings.get(cam.id);
+    if (rec && rec.lastCount && rec.lastCount.total !== null) {
+      const lc = rec.lastCount;
+      box.innerHTML =
+        chip('รวม (10 นาทีล่าสุด)', lc.total + ' คัน', 'bg-sky-500/15 border border-sky-500/30 text-sky-300') +
+        Object.entries(lc.counts || {})
+          .filter(([_, n]) => n > 0)
+          .map(([k, n]) => chip(LABELS[k] || k, n, 'bg-slate-800 border border-slate-700 text-slate-300'))
+          .join('');
+      age.textContent = `จากคลิป 10 นาทีล่าสุด (${rec.latest || ''})`;
+      note.textContent = 'สถิติจำนวนรถเฉลี่ยที่บันทึกไว้ในคลิป 10 นาทีล่าสุดจากไดรฟ์ D';
+      return;
+    }
     box.innerHTML = '';
     age.textContent = '';
     note.textContent = reading && reading.error
@@ -1819,7 +1863,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(() => {
     if (state.view !== 'cams') return;
     loadDetections();
-  }, 20000);
+  }, 3000);
 
   loadRecordings();
   setInterval(() => {

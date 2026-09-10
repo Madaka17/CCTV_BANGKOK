@@ -60,6 +60,7 @@ async function loadCameras() {
     state.cameras = data.cameras || [];
     fillOrgFilter();
     if (state.view === 'map') { addCameraMarkers(); } else { render(); }
+    refreshFocusTarget();
   } catch (err) {
     grid.innerHTML = '';
     setEmptyMessage(`โหลดรายการกล้องไม่สำเร็จ (${err.message})`);
@@ -865,11 +866,7 @@ function setFocus(id) {
         state.focusFps = data.fps || 0;
         redrawAllBoxes();
         if (state.detail && state.detail.id === id) renderDetailCounts(state.detail, reading);
-        const line = el('c-' + cssId(id));
-        if (line && reading.total !== null) {
-          const parts = Object.entries(reading.counts).map(([k, n]) => `${LABELS[k] || k} ${n}`).join(' · ');
-          line.textContent = reading.total ? `${reading.total} คัน — ${parts}` : 'ไม่พบรถ';
-        }
+        paintCardCounts();
       }
       updateFocusBadge();
     } catch (err) { /* detector off */ }
@@ -886,10 +883,18 @@ function updateFocusBadge() {
   if (on) b.textContent = `ตรวจจับสด ${state.focusFps.toFixed(1)} fps`;
 }
 
-// The open camera, or nothing. Closing the detail releases the detector, so a
-// grid left open on screen costs it nothing.
+// Focus on the open camera if viewing detail, otherwise focus on first watchlist camera or first camera.
 function refreshFocusTarget() {
-  setFocus(state.detail ? state.detail.id : null);
+  if (state.detail) {
+    setFocus(state.detail.id);
+  } else if (state.watchlist && state.watchlist.size > 0) {
+    const firstWatched = Array.from(state.watchlist)[0];
+    setFocus(firstWatched);
+  } else if (state.cameras && state.cameras.length > 0) {
+    setFocus(state.cameras[0].id);
+  } else {
+    setFocus(null);
+  }
 }
 
 // --- Camera detail ---------------------------------------------------------
@@ -1026,6 +1031,19 @@ function renderDetailCounts(cam, reading) {
   const note = el('detail-note');
 
   if (!reading || reading.total === null) {
+    const rec = state.recordings.get(cam.id);
+    if (rec && rec.lastCount && rec.lastCount.total !== null) {
+      const lc = rec.lastCount;
+      box.innerHTML =
+        chip('รวม (10 นาทีล่าสุด)', lc.total + ' คัน', 'bg-sky-500/15 border border-sky-500/30 text-sky-300') +
+        Object.entries(lc.counts || {})
+          .filter(([_, n]) => n > 0)
+          .map(([k, n]) => chip(LABELS[k] || k, n, 'bg-slate-800 border border-slate-700 text-slate-300'))
+          .join('');
+      age.textContent = `จากคลิป 10 นาทีล่าสุด (${rec.latest || ''})`;
+      note.textContent = 'สถิติจำนวนรถเฉลี่ยที่บันทึกไว้ในคลิป 10 นาทีล่าสุดจากไดรฟ์ D';
+      return;
+    }
     box.innerHTML = '';
     age.textContent = '';
     note.textContent = reading && reading.error
@@ -1845,7 +1863,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(() => {
     if (state.view !== 'cams') return;
     loadDetections();
-  }, 20000);
+  }, 3000);
 
   loadRecordings();
   setInterval(() => {
