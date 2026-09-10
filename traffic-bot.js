@@ -246,6 +246,152 @@ function evaluateRoutePreset(preset, ctx) {
   return { reply, relatedCams };
 }
 
+// --- Corridor Bypass Tips for Map Red Routes ---
+const CORRIDOR_MAP_BYPASSES = [
+  {
+    match: ['ประชานุกูล', 'ประชาชื่น', 'วงศ์สว่าง', 'ประชานิเวศน์', 'รัชดา', 'รัชวิภา'],
+    name: 'ย่านประชานุกูล - ประชาชื่น - วงศ์สว่าง',
+    bypassTips: [
+      'เบี่ยงเข้า **ถ.ประชาชื่นเลียบคลองประปา** เพื่อมุ่งหน้างามวงศ์วานหรือแจ้งวัฒนะ',
+      'ขึ้นสะพานยกระดับข้ามแยกประชานุกูลตรงไปรัชวิภา เลี่ยงระดับพื้นราบ',
+      'ใช้เส้นทาง **MRT วงศ์สว่าง / สะพานพระราม 7** เชื่อมต่อทางพิเศษประจิมรัถยา'
+    ]
+  },
+  {
+    match: ['สาทร', 'สีลม', 'ตากสิน', 'สะพานตากสิน', 'กรุงธนบุรี', 'เจริญนคร'],
+    name: 'คอขวดสะพานตากสิน - สาทร - สีลม',
+    bypassTips: [
+      'เบี่ยงใช้ **สะพานพระราม 3 หรือ สะพานกรุงเทพ** ข้ามแม่น้ำเจ้าพระยาเข้าสู่ ถ.พระราม 3 ➔ ถ.นราธิวาสราชนครินทร์',
+      'ใช้ทางพิเศษศรีรัช ลงด่านสีลม หรือ ด่านจันทน์ เพื่อเข้าสู่สาทรโดยตรง'
+    ]
+  },
+  {
+    match: ['พระราม4', 'พระรามสี่', 'วิทยุ', 'คลองเตย', 'ทางด่วนพระราม4'],
+    name: 'ถ.พระราม 4 - ทางด่วนพระราม 4',
+    bypassTips: [
+      'เลี่ยงเข้า **ถ.พระราม 3** หรือ **ถ.เชื้อเพลิง** ออกสู่ ถ.สาทร/คลองเตย',
+      'ใช้ทางพิเศษเฉลิมมหานคร ต่อเนื่องไปลงด่านเพลินจิต หรือสุขุมวิท 62'
+    ]
+  },
+  {
+    match: ['บางปะกอก', 'พระราม2', 'พระรามสอง', 'สุขสวัสดิ์', 'ราษฎร์บูรณะ'],
+    name: 'ถ.พระราม 2 - สุขสวัสดิ์ - บางปะกอก',
+    bypassTips: [
+      'เบี่ยงเข้า **ถ.กัลปพฤกษ์ / ถ.ราชพฤกษ์** หรือ **ถ.เอกชัย** เพื่อมุ่งหน้าเข้าสู่ใจกลางเมือง',
+      'ใช้ **ทางพิเศษกาญจนาภิเษก วงแหวนใต้** (สะพานกาญจนาภิเษก บางพลี-สุขสวัสดิ์) เลี่ยงสะพานพระราม 9'
+    ]
+  },
+  {
+    match: ['บางใหญ่', 'กาญจนาภิเษก', 'แคราย', 'รัตนาธิเบศร์', 'งามวงศ์วาน'],
+    name: 'ถ.รัตนาธิเบศร์ - แคราย - งามวงศ์วาน',
+    bypassTips: [
+      'ใช้ **ทางพิเศษประจิมรัถยา (ด่วนศรีรัช-วงแหวนรอบนอก)** ด่านบางบัวทอง ข้ามสะพานพระราม 7',
+      'ใช้ **ถ.นครอินทร์** ข้ามสะพานพระราม 5 เชื่อมต่อ ถ.ติวานนท์ หรือ พระราม 7'
+    ]
+  },
+  {
+    match: ['วิภาวดี', 'ดอนเมือง', 'หลักสี่', 'พหลโยธิน', 'ลำลูกกา'],
+    name: 'ถ.วิภาวดีรังสิต - พหลโยธิน',
+    bypassTips: [
+      'ขึ้น **ทางยกระดับอุตราภิมุข (ดอนเมืองโทลล์เวย์)**',
+      'ใช้ **ถ.กำแพงเพชร 6 (Local Road)** วิ่งเลียบทางรถไฟสายสีแดง'
+    ]
+  }
+];
+
+function evaluateMapRedRoutes(query, ctx) {
+  const normQ = (query || '').toLowerCase().replace(/\s+/g, '');
+  const relatedCams = [];
+
+  // Filter roads with red traffic lines (jam percentage >= 15% or status 'ติดขัด')
+  const redRoads = ctx.sortedRoads.filter(r => r.congestion && (r.congestion.share.jam >= 15 || r.congestion.label === 'ติดขัด'));
+  const greenRoads = ctx.sortedRoads.filter(r => r.congestion && r.congestion.share.jam < 10 && r.congestion.share.flowing >= 65);
+
+  let reply = `### 🗺️ ระบบตรวจจับเส้นทางสีแดงจากแผนที่จราจร (Live Map Red-Line Navigator)\n\n`;
+  reply += `**สามารถตรวจจับจากแผนที่ (Map Traffic Vector) แทนหรือร่วมกับกล้องได้ทันทีครับ!**\n`;
+  reply += `ระบบประมวลผลข้อมูลเส้นสีจราจรกว่า 33,000 เวกเตอร์เซกเมนต์ของ Longdo Traffic ทุก 5 นาที โดยแยกสถานะสี:\n`;
+  reply += `- 🔴 **สีแดง (#FF2020)**: ติดขัดสะสม (Jam)\n`;
+  reply += `- 🟡 **สีเหลือง (#FEDE04)**: ชะลอตัว (Slow)\n`;
+  reply += `- 🟢 **สีเขียว (#54C00C)**: คล่องตัว (Flowing)\n\n`;
+
+  if (redRoads.length === 0) {
+    reply += `🟢 **สถานะบนแผนที่ขณะนี้**: ไม่พบเส้นทางสีแดงติดขัดรุนแรงในโครงข่ายหลัก เส้นทางส่วนใหญ่เป็นสีเขียว (คล่องตัว) เดินทางได้สะดวกครับ\n`;
+    return { reply, relatedCams };
+  }
+
+  // Check if query asks about a specific road/area
+  const matchedRedRoad = redRoads.find(r => {
+    const rName = r.name.toLowerCase().replace(/\s+/g, '');
+    if (normQ.includes(rName) || rName.includes(normQ)) return true;
+    for (const cb of CORRIDOR_MAP_BYPASSES) {
+      const inCorridor = cb.match.some(m => rName.includes(m));
+      const inQuery = cb.match.some(m => normQ.includes(m));
+      if (inCorridor && inQuery) return true;
+    }
+    return false;
+  });
+
+  if (matchedRedRoad) {
+    const c = matchedRedRoad.congestion;
+    (matchedRedRoad.cameras || []).forEach(cam => relatedCams.push(cam.id));
+    const camLinks = (matchedRedRoad.cameras || []).map(cam => `[🎥 ${cam.title}](cam:${cam.id})`).join(', ');
+
+    reply += `#### 🚨 ตรวจพบเส้นทางสีแดงบนถนน: **${matchedRedRoad.name}**\n`;
+    reply += `- 🔴 **สัดส่วนเส้นสีแดง (ติดขัดสะสม)**: **${c.share.jam}%**\n`;
+    reply += `- 🟡 **สัดส่วนเส้นสีเหลือง (ชะลอตัว)**: **${c.share.slow}%**\n`;
+    reply += `- 🟢 **สัดส่วนเส้นสีเขียว (คล่องตัว)**: **${c.share.flowing}%**\n`;
+    reply += `- 📊 **ระดับความหนาแน่น**: ${c.score}/100 (ระดับ: **${c.label}**)\n`;
+    if (camLinks) reply += `- 📹 **จุดตรวจกล้องสด**: ${camLinks}\n\n`;
+
+    const corridor = CORRIDOR_MAP_BYPASSES.find(cb => cb.match.some(m => matchedRedRoad.name.toLowerCase().includes(m)));
+    reply += `#### 💡 คำแนะนำเส้นทางเลี่ยงสีเขียว (Green Bypass) จาก AI:\n`;
+    if (corridor) {
+      corridor.bypassTips.forEach(tip => {
+        reply += `- 🛣️ ${tip}\n`;
+      });
+    } else {
+      reply += `- 🛣️ แนะนำเบี่ยงใช้ถนนคู่ขนาน หรือโครงข่ายทางด่วนใกล้เคียง เพื่อเลี่ยงช่วงที่เกิดเส้นสีแดง\n`;
+    }
+
+    if (greenRoads.length > 0) {
+      reply += `\n**🟢 เส้นทางใกล้เคียงบนแผนที่ที่เป็นสีเขียว (คล่องตัวดี)**:\n`;
+      greenRoads.slice(0, 3).forEach(gr => {
+        (gr.cameras || []).forEach(cam => relatedCams.push(cam.id));
+        reply += `- **${gr.name}**: เส้นทางสีเขียว **${gr.congestion.share.flowing}%** (สีแดงเพียง ${gr.congestion.share.jam}%)\n`;
+      });
+    }
+
+    return { reply, relatedCams };
+  }
+
+  // General Report of Red Routes across Bangkok Map
+  reply += `#### 🚨 ตรวจพบจุดวิกฤติเส้นสีแดงบนแผนที่ขณะนี้ (${redRoads.length} จุดหลัก):\n\n`;
+
+  redRoads.slice(0, 4).forEach((r, idx) => {
+    const c = r.congestion;
+    (r.cameras || []).forEach(cam => relatedCams.push(cam.id));
+    const camLinks = (r.cameras || []).map(cam => `[🎥 ${cam.title}](cam:${cam.id})`).join(', ');
+
+    reply += `**${idx + 1}. 🔴 ${r.name}**\n`;
+    reply += `- **สถานะบนแผนที่**: เส้นสีแดงติดขัด **${c.share.jam}%** · ชะลอตัว ${c.share.slow}% · คล่องตัว ${c.share.flowing}%\n`;
+    if (camLinks) reply += `- **จุดตรวจกล้องสด**: ${camLinks}\n`;
+
+    const corridor = CORRIDOR_MAP_BYPASSES.find(cb => cb.match.some(m => r.name.toLowerCase().includes(m)));
+    if (corridor && corridor.bypassTips.length > 0) {
+      reply += `- 💡 **ทางเลี่ยงที่แนะนำ**: ${corridor.bypassTips[0]}\n`;
+    }
+    reply += `\n`;
+  });
+
+  reply += `#### 🟢 เส้นทางสีเขียวบนแผนที่ (ทางเลือกที่คล่องตัว 70-100%):\n`;
+  greenRoads.slice(0, 4).forEach(gr => {
+    reply += `- ✅ **${gr.name}**: เส้นทางสีเขียวคล่องตัว **${gr.congestion.share.flowing}%** (สีแดงเพียง ${gr.congestion.share.jam}%)\n`;
+  });
+
+  reply += `\n💬 *พิมพ์ถามเจาะจงได้ทันที เช่น "ถนนประชานุกูลแดงไหม ไปทางไหนแทน" หรือคลิกปุ่มหาทางเลี่ยงได้ครับ*`;
+  return { reply, relatedCams };
+}
+
 /**
  * Built-in Intelligent Traffic Engine (Offline / Local RAG)
  */
@@ -254,7 +400,18 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
   const normQ = q.replace(/\s+/g, '');
   const relatedCams = [];
 
-  // 1. Navigation & Route Bypass Queries: "นำทาง", "ทางเลี่ยง", "เส้นทาง", "ไปทางไหน", "จาก ... ไป ...", "เลี่ยง"
+  // 1. Map-Based Red Route & Bypass Queries:
+  // "จับจากแมพ", "แผนที่", "เส้นทางแดง", "เส้นสีแดง", "ทางแดง", "ติดแดง", "สีแดง", "เส้นแดง", "ถนนแดง", "แมพ"
+  const isMapRedQuery = q.includes('แมพ') || q.includes('แผนที่') || q.includes('เส้นทางแดง') ||
+                        q.includes('เส้นสีแดง') || q.includes('ทางแดง') || q.includes('ติดแดง') ||
+                        q.includes('สีแดง') || q.includes('เส้นแดง') || q.includes('ถนนแดง') ||
+                        (q.includes('แดง') && (q.includes('เส้น') || q.includes('ทาง') || q.includes('ถนน') || q.includes('เลี่ยง') || q.includes('ไปไหน') || q.includes('ไปทางไหน') || q.includes('จับ') || q.includes('แทน')));
+
+  if (isMapRedQuery) {
+    return evaluateMapRedRoutes(query, ctx);
+  }
+
+  // 2. Navigation & Route Bypass Queries: "นำทาง", "ทางเลี่ยง", "เส้นทาง", "ไปทางไหน", "จาก ... ไป ...", "เลี่ยง"
   const isNavQuery = q.includes('นำทาง') || q.includes('เส้นทาง') || q.includes('ทางเลี่ยง') ||
                      q.includes('เลี่ยง') || q.includes('ไปทางไหน') || q.includes('เดินทาง') ||
                      q.includes('route') || q.includes('bypass') ||
@@ -421,20 +578,28 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
 
     if (!isCam && matchedRoad.congestion) {
       const c = matchedRoad.congestion;
-      reply += `\n**สภาพโครงข่ายถนน (${c.km} กม. รอบกล้อง)**:\n`;
-      reply += `- ระดับ: **${c.label}** (คะแนน ${c.score}/100)\n`;
-      reply += `- สัดส่วน: ติดขัด ${c.share.jam}% · ชะลอตัว ${c.share.slow}% · คล่องตัว ${c.share.flowing}%\n`;
+      reply += `\n**สภาพเส้นสีบนแผนที่จราจร (${c.km} กม. รอบกล้อง)**:\n`;
+      reply += `- ระดับ: **${c.label}** (คะแนนความหนาแน่น ${c.score}/100)\n`;
+      reply += `- 🔴 สีแดง (ติดขัด): **${c.share.jam}%** · 🟡 สีเหลือง (ชะลอตัว): **${c.share.slow}%** · 🟢 สีเขียว (คล่องตัว): **${c.share.flowing}%**\n`;
+
+      if (c.share.jam >= 15) {
+        const corridor = CORRIDOR_MAP_BYPASSES.find(cb => cb.match.some(m => matchedRoad.name.toLowerCase().includes(m)));
+        if (corridor) {
+          reply += `\n💡 **คำแนะนำเส้นทางเลี่ยงสีเขียว (Green Bypass)**:\n`;
+          corridor.bypassTips.forEach(tip => { reply += `- ${tip}\n`; });
+        }
+      }
     }
 
     if (!isCam && matchedRoad.advice) {
-      reply += `\n💡 **ข้อเสนอแนะการจัดการจราจร**: ${matchedRoad.advice.headline}\n> ${matchedRoad.advice.detail}\n`;
+      reply += `\n🚦 **ข้อเสนอแนะการจัดการจราจร**: ${matchedRoad.advice.headline}\n> ${matchedRoad.advice.detail}\n`;
     }
 
     return { reply, relatedCams };
   }
 
-  // 3. Congestion Query: "ติดตรงไหน", "รถติด", "jam"
-  if (q.includes('ติด') || q.includes('jam') || q.includes('หนาแน่น') || q.includes('แดง')) {
+  // 4. Congestion Query: "ติดตรงไหน", "รถติด", "jam"
+  if (q.includes('ติด') || q.includes('jam') || q.includes('หนาแน่น')) {
     let reply = `### 🚨 รายงานจุดจราจรติดขัดและหนาแน่นสูงสุดใน กทม.\n\n`;
 
     const topJam = ctx.sortedRoads.filter(r => (r.congestion && r.congestion.score >= 20) || (r.advice && r.advice.action === 'meter')).slice(0, 5);
@@ -468,8 +633,8 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
     return { reply, relatedCams };
   }
 
-  // 4. Signal / Light Timing Advice: "ปล่อยไฟ", "สัญญาณไฟ", "ปล่อยรถ", "เขียว", "meter", "release"
-  if (q.includes('ไฟ') || q.includes('ปล่อย') || q.includes('สัญญาณ') || q.includes('เขียว') || q.includes('แดง')) {
+  // 5. Signal / Light Timing Advice: "ปล่อยไฟ", "สัญญาณไฟ", "ปล่อยรถ", "เขียว", "meter", "release"
+  if (q.includes('ไฟ') || q.includes('ปล่อย') || q.includes('สัญญาณ') || q.includes('ไฟเขียว') || q.includes('ไฟแดง')) {
     let reply = `### 🚦 ข้อเสนอแนะการปรับสัญญาณไฟจราจร (Signal Timing Advisory)\n\n`;
 
     if (ctx.releaseRoads.length > 0) {
@@ -559,6 +724,12 @@ ${ctx.busyCams.slice(0, 5).map(d => {
   return `- กล้อง ${d.title} (ID: ${d.id}): พบรถ ${d.total} คัน ${spd}`;
 }).join('\n')}
 
+[ความสามารถในการตรวจจับเส้นทางสีแดงบนแผนที่ (Map-Based Red Route Navigator)]:
+คุณสามารถตรวจจับเส้นทางสีแดง (ติดขัดสะสม) จากข้อมูลเวกเตอร์แผนที่จราจร (Longdo Traffic Vector Tiles) ได้โดยตรง:
+- ระบุถนนที่มีเส้นสีแดงติดขัด (สัดส่วนติดขัด %) และวิเคราะห์คอขวดบนแผนที่
+- เมื่อพบถนน/เส้นทางที่มีเส้นสีแดง ให้เสนอ "เส้นทางเลี่ยงสีเขียว (Green Bypass)" ที่คล่องตัวกว่าในโซนใกล้เคียงทันที
+- ผู้ใช้สามารถถามให้จับจากแผนที่แทนกล้องได้ และคุณสามารถตอบได้อย่างมั่นใจว่าระบบรองรับการตรวจจับจากแผนที่โดยตรง 100%
+
 [ความสามารถในการนำทางและเสนอเส้นทางเลี่ยง (Navigation & Bypass AI)]:
 คุณสามารถวางแผนเส้นทางและเสนอทางเลี่ยงรถติดได้อย่างแม่นยำ โดยเปรียบเทียบระหว่างเส้นทางหลักและทางเลี่ยงจากข้อมูลภาพกล้อง CCTV สด, ความเร็วพื้นที่จริง (px/s), สัดส่วนรถจอดนิ่ง (%), และ Longdo Index:
 - เหนือ ➔ ใจกลางเมือง: ดอนเมือง/วิภาวดี ➔ สาทร/สีลม (เทียบทางด่วนเฉลิมมหานคร vs ทางด่วนศรีรัช)
@@ -570,7 +741,7 @@ ${ctx.busyCams.slice(0, 5).map(d => {
 คำแนะนำการตอบ:
 1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น
 2. เมื่อกล่าวถึงกล้องใดๆ ให้ใส่ลิงก์ในรูปแบบ [🎥 ชื่อกล้อง](cam:CAM_ID) เพื่อให้ผู้ใช้กดดูภาพสดได้ทันที
-3. วิเคราะห์ทั้งด้านปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
+3. วิเคราะห์ทั้งด้านข้อมูลเส้นสีบนแผนที่, ปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
 `;
 
   const contents = [];

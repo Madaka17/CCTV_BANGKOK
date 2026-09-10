@@ -514,9 +514,10 @@ function setEmptyMessage(content, isHtml = false) {
 // recorded, so a viewer watching a card sees the junction as it actually ran,
 // not a sample of it.
 
-async function loadRecordings() {
+async function loadRecordings(forceFresh = false) {
   try {
-    const res = await fetch('/api/recordings');
+    const url = forceFresh ? `/api/recordings?fresh=1&t=${Date.now()}` : `/api/recordings?t=${Date.now()}`;
+    const res = await fetch(url);
     const data = await res.json();
     state.recordings = new Map((data.cameras || []).map(c => [c.id, c]));
     showRecorderNotice(!data.recording);
@@ -524,6 +525,12 @@ async function loadRecordings() {
   } catch (err) {
     /* recorder not running; the cards say so */
   }
+}
+
+function formatClipTime(clip) {
+  if (!clip) return '';
+  const part = clip.includes('/') ? clip.split('/')[1] : clip;
+  return part.replace(/\.mp4$/i, '').replace(/-/g, ':');
 }
 
 function paintRecording(cam) {
@@ -542,43 +549,93 @@ function paintRecording(cam) {
     return;
   }
 
-  // Keep playing where this card already was. Repainting happens every time
-  // the list is refetched, and starting the day over each time would mean a
-  // card never got past its first clip.
+  const latestClip = clips[clips.length - 1];
   const playing = slot.querySelector('video');
-  const at = playing && playing.dataset.clip;
-  let index = at ? clips.indexOf(at) : -1;
-  if (index === -1) index = clips.length - 1;   // a new card opens on the newest
-  if (playing && clips[index] === at) {
+
+  // If a video element already exists on this card
+  if (playing) {
     playing.dataset.clips = clips.join(' ');
+    playing.dataset.latest = latestClip;
+
+    // If playback already ended or stopped near end, immediately jump to the newest 10-minute clip from Drive D
+    if (playing.ended || (playing.paused && playing.currentTime > 0 && playing.currentTime >= (playing.duration || 1) - 0.5)) {
+      if (playing.dataset.clip !== latestClip && playing._playClip) {
+        playing._playClip(latestClip);
+      }
+    }
     return;
   }
 
-  slot.innerHTML = `<video class="absolute inset-0 w-full h-full object-contain"
-    muted playsinline autoplay></video>
-    <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded"></span>`;
-  const video = slot.querySelector('video');
-  const badge = slot.querySelector('span');
-  video.dataset.clips = clips.join(' ');
+  slot.innerHTML = `
+    <video class="absolute inset-0 w-full h-full object-contain" muted playsinline autoplay></video>
+    <div class="rec-badge absolute bottom-2.5 left-2.5 z-10 px-2 py-0.5 text-[10px] font-bold bg-slate-900/85 backdrop-blur-md text-emerald-300 rounded-md border border-white/10 flex items-center gap-1 shadow-sm pointer-events-none">
+      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+      <span class="rec-time">10 นาทีล่าสุด</span>
+    </div>`;
 
-  const show = (i) => {
-    const list = video.dataset.clips.split(' ');
-    const clip = list[Math.min(i, list.length - 1)];
+  const video = slot.querySelector('video');
+  const timeEl = slot.querySelector('.rec-time');
+  video.dataset.clips = clips.join(' ');
+  video.dataset.latest = latestClip;
+
+  const playClip = (clip) => {
+    if (video._waitNextTimer) {
+      clearInterval(video._waitNextTimer);
+      video._waitNextTimer = null;
+    }
     video.dataset.clip = clip;
     video.src = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
-    badge.textContent = clip.slice(11, 19).replace(/-/g, ':');
-    video.play().catch(() => { /* a card off screen may refuse to start */ });
+    if (timeEl) timeEl.textContent = formatClipTime(clip);
+    video.play().catch(() => { /* a card off screen or muted policy */ });
   };
+  video._playClip = playClip;
 
-  // A clip is ten minutes and the next one is already recorded by the time it
-  // ends, so a card that runs straight on never has to wait for one.
-  video.addEventListener('ended', () => {
-    const list = video.dataset.clips.split(' ');
-    const next = list.indexOf(video.dataset.clip) + 1;
-    show(next < list.length ? next : 0);
+  // Auto transition when clip ends:
+  // "เมื่อคลิปในเว็บเล่นจบแล้วให้มาดึงคลิป 10 นาทีล่าสุดใน Drive D อัตโนมัติ"
+  video.addEventListener('ended', async () => {
+    // 1. Force fresh fetch of recordings from Drive D
+    await loadRecordings(true);
+
+    const freshRec = state.recordings.get(cam.id);
+    const freshClips = (freshRec && freshRec.clips) || video.dataset.clips.split(' ').filter(Boolean);
+    if (!freshClips.length) return;
+
+    const newestClip = freshClips[freshClips.length - 1];
+
+    // If there is a newer 10-minute clip available, immediately switch to it
+    if (newestClip && newestClip !== video.dataset.clip) {
+      playClip(newestClip);
+    } else {
+      // Current clip is already the latest. While waiting for the next 10-min clip to finish recording,
+      // show waiting badge and poll Drive D every 5 seconds until new clip lands
+      if (timeEl) timeEl.innerHTML = `<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping mr-1"></span>รอคลิปใหม่...`;
+
+      if (video._waitNextTimer) clearInterval(video._waitNextTimer);
+      video._waitNextTimer = setInterval(async () => {
+        await loadRecordings(true);
+        const pollRec = state.recordings.get(cam.id);
+        const pollClips = (pollRec && pollRec.clips) || [];
+        const pollNewest = pollClips[pollClips.length - 1];
+        if (pollNewest && pollNewest !== video.dataset.clip) {
+          clearInterval(video._waitNextTimer);
+          video._waitNextTimer = null;
+          playClip(pollNewest);
+        }
+      }, 5000);
+    }
   });
 
-  show(index);
+  // Handle transient playback error by retrying latest clip
+  video.addEventListener('error', () => {
+    setTimeout(async () => {
+      await loadRecordings(true);
+      const errRec = state.recordings.get(cam.id);
+      if (errRec && errRec.latest) playClip(errRec.latest);
+    }, 4000);
+  });
+
+  // Start with the latest 10-minute clip
+  playClip(latestClip);
 }
 
 function showRecorderNotice(off) {
@@ -1726,5 +1783,5 @@ document.addEventListener('DOMContentLoaded', () => {
   loadRecordings();
   setInterval(() => {
     if (state.view === 'cams') loadRecordings();
-  }, 30000);
+  }, 10000);
 });

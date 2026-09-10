@@ -218,10 +218,10 @@ function insideArchive(parts) {
 // round that wrote it, but the archive only changes every ten minutes. Holding
 // the answer briefly keeps that from walking 29 directories per viewer per ask.
 let recordingsCache = { at: 0, data: null };
-const RECORDINGS_TTL_MS = 15 * 1000;
+const RECORDINGS_TTL_MS = 5 * 1000;
 
-function listRecordings() {
-  if (recordingsCache.data && Date.now() - recordingsCache.at < RECORDINGS_TTL_MS) {
+function listRecordings(forceFresh = false) {
+  if (!forceFresh && recordingsCache.data && Date.now() - recordingsCache.at < RECORDINGS_TTL_MS) {
     return recordingsCache.data;
   }
 
@@ -421,8 +421,12 @@ const requestHandler = async (req, res) => {
   // sync root, so it is reached by path rather than served from public/.
   if (pathname === '/api/recordings' || pathname.startsWith('/api/recording/')) {
     if (pathname === '/api/recordings') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(listRecordings(), null, 2));
+      const forceFresh = parsedUrl.query && (parsedUrl.query.fresh === '1' || parsedUrl.query.fresh === 'true');
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      });
+      res.end(JSON.stringify(listRecordings(forceFresh), null, 2));
       return;
     }
     sendRecording(res, pathname.slice('/api/recording/'.length), req.headers.range);
