@@ -1567,6 +1567,16 @@ function initChatbot() {
     });
   }
 
+  const navAiBtn = el('detail-nav-ai');
+  if (navAiBtn) {
+    navAiBtn.addEventListener('click', () => {
+      if (state.detail) {
+        toggleChatDrawer(true);
+        sendChatMessage(`แนะนำเส้นทางเลี่ยงรถติดบริเวณ ${state.detail.title}`, state.detail.id);
+      }
+    });
+  }
+
   const clearBtn = el('chat-btn-clear');
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {

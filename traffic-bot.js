@@ -57,14 +57,292 @@ function buildTrafficContext(cameras, adviceData, detectionsData, trafficIndex) 
   };
 }
 
+// --- Major Bangkok Navigation Corridors & Bypass Routes ---
+const ROUTE_PRESETS = [
+  {
+    id: 'dmk_sathorn',
+    name: 'ดอนเมือง / วิภาวดี ➔ สาทร / สีลม',
+    origins: ['ดอนเมือง', 'วิภาวดี', 'หลักสี่', 'ดินแดง', 'โทลล์เวย์'],
+    dests: ['สาทร', 'สีลม', 'พระราม4', 'พระรามสี่'],
+    match: ['ดอนเมือง', 'วิภาวดี', 'หลักสี่', 'สาทร', 'สีลม', 'พระราม4', 'พระรามสี่', 'ดินแดง'],
+    primary: {
+      name: 'ทางด่วนเฉลิมมหานคร (ลงทางด่วนพระราม 4)',
+      cams: ['DOH-PER-3-008', 'ITICM_BMAMI0074', 'ITICM_BMAMI0071'],
+      via: 'ดอนเมืองโทลล์เวย์ ➔ ด่วนดินแดง ➔ ลงแยกทางด่วนพระราม 4 ➔ ถ.สาทร'
+    },
+    bypass: {
+      name: 'ทางด่วนศรีรัช (ลงด่วนสีลม / ถ.สาทรเหนือ)',
+      cams: ['DOH-PER-3-008', 'ITICM_BMAMI0076'],
+      via: 'ดอนเมืองโทลล์เวย์ ➔ เชื่อมต่อด่วนศรีรัช ➔ ลงด่านสีลม หรือ ถ.สาทรเหนือโดยตรง'
+    },
+    tip: 'หากแยกพระราม 4 มีรถสะสม ให้เลือกเบี่ยงลงด่านสีลมแทน จะเลี่ยงคอขวดแยกพระราม 4 ได้สนิท'
+  },
+  {
+    id: 'bangyai_cbd',
+    name: 'บางใหญ่ / นนทบุรี ➔ พระราม 4 / อโศก',
+    origins: ['บางใหญ่', 'นนทบุรี', 'กาญจนาภิเษก', 'แคราย', 'รัตนาธิเบศร์', 'งามวงศ์วาน'],
+    dests: ['พระราม4', 'พระรามสี่', 'อโศก', 'รัชดา', 'รัชวิภา'],
+    match: ['บางใหญ่', 'นนทบุรี', 'กาญจนาภิเษก', 'แคราย', 'รัตนาธิเบศร์', 'งามวงศ์วาน', 'พระราม4', 'อโศก', 'รัชดา'],
+    primary: {
+      name: 'รัตนาธิเบศร์ ➔ งามวงศ์วาน ➔ รัชวิภา ➔ รัชดาภิเษก',
+      cams: ['DOH-PER-3-006', 'DOH-PER-9-026-out', 'ITICM_BMAMI0211', 'ITICM_BMAMI0074'],
+      via: 'ถ.กาญจนาภิเษก ➔ ถ.รัตนาธิเบศร์ ➔ แยกแคราย ➔ ประชานุกูล ➔ รัชวิภา ➔ รัชดาภิเษก'
+    },
+    bypass: {
+      name: 'ทางพิเศษประจิมรัถยา (ด่วนศรีรัช-วงแหวนรอบนอก ข้ามสะพานพระราม 7)',
+      cams: ['DOH-PER-3-006', 'ITICM_BMAMI0166', 'ITICM_BMAMI0076'],
+      via: 'ขึ้นด่วนประจิมรัถยา ด่านบางบัวทอง/กาญจนาภิเษก ➔ ข้ามสะพานพระราม 7 ➔ เชื่อมต่อด่วนศรีรัชลงใจกลางเมือง'
+    },
+    tip: 'ประหยัดเวลาหลบแยกแครายและแยกประชานุกูลได้ประมาณ 25-35 นาทีในช่วงเร่งด่วน'
+  },
+  {
+    id: 'thonburi_sathorn',
+    name: 'ฝั่งธนบุรี / ราชพฤกษ์ ➔ สาทร / สีลม',
+    origins: ['ธนบุรี', 'ฝั่งธน', 'ตากสิน', 'สะพานตากสิน', 'ราชพฤกษ์', 'กัลปพฤกษ์', 'เจริญนคร', 'กรุงธนบุรี'],
+    dests: ['สาทร', 'สีลม', 'พระราม3', 'พระรามสาม', 'นราธิวาส'],
+    match: ['ธนบุรี', 'ฝั่งธน', 'ตากสิน', 'สะพานตากสิน', 'ราชพฤกษ์', 'กัลปพฤกษ์', 'เจริญนคร', 'กรุงธนบุรี', 'สาทร', 'สีลม'],
+    primary: {
+      name: 'ถ.กรุงธนบุรี ข้ามสะพานสมเด็จพระเจ้าตากสิน ➔ สาทรเหนือ/ใต้',
+      cams: ['ITICM_BMAMI0080', 'ITICM_BMAMI0081', 'ITICM_BMAMI0076'],
+      via: 'ถ.ราชพฤกษ์/กัลปพฤกษ์ ➔ ถ.กรุงธนบุรี ➔ ข้ามสะพานตากสิน ➔ เข้าสู่ ถ.สาทร'
+    },
+    bypass: {
+      name: 'ข้ามสะพานพระราม 3 หรือ สะพานกรุงเทพ ➔ เข้า ถ.พระราม 3 ➔ ถ.นราธิวาสราชนครินทร์',
+      cams: ['ITICM_BMAMI0080', 'ITICM_BMAMI0076'],
+      via: 'เบี่ยงจาก ถ.สมเด็จพระเจ้าตากสิน ➔ ข้ามสะพานพระราม 3 ➔ ถ.พระราม 3 ➔ ถ.นราธิวาสฯ เลี่ยงสะพานตากสิน'
+    },
+    tip: 'สะพานตากสินมักมีท้ายแถวสะสม การเบี่ยงไปสะพานพระราม 3 เข้า ถ.นราธิวาสราชนครินทร์จะช่วยหลบแถวคอยบนสะพานสาทรได้'
+  },
+  {
+    id: 'bangna_rama2',
+    name: 'บางนา-ตราด ➔ พระราม 2 / บางปะกอก',
+    origins: ['บางนา', 'บางปะกง', 'สมุทรปราการ'],
+    dests: ['พระราม2', 'พระรามสอง', 'บางปะกอก', 'สุขสวัสดิ์', 'พระประแดง'],
+    match: ['บางนา', 'บางปะกง', 'พระราม2', 'พระรามสอง', 'บางปะกอก', 'สุขสวัสดิ์', 'พระประแดง', 'สมุทรปราการ'],
+    primary: {
+      name: 'ทางพิเศษเฉลิมมหานคร (ข้ามสะพานพระราม 9)',
+      cams: ['DOH-PER-3-009', 'ITICM_BMAMI0208', 'ITICM_BMAMI0293'],
+      via: 'ถ.บางนา-ตราด ➔ ด่วนเฉลิมมหานคร ➔ ข้ามสะพานพระราม 9 ➔ ถ.พระราม 2'
+    },
+    bypass: {
+      name: 'ทางพิเศษกาญจนาภิเษก วงแหวนใต้ (ข้ามสะพานกาญจนาภิเษก บางพลี-สุขสวัสดิ์)',
+      cams: ['DOH-PER-3-009', 'DOH-PER-12-015', 'ITICM_BMAMI0292'],
+      via: 'ถ.กาญจนาภิเษก วงแหวนใต้ ➔ ข้ามสะพานกาญจนาภิเษก ➔ ลงสุขสวัสดิ์-พระประแดง ➔ ตัดเข้าพระราม 2'
+    },
+    tip: 'ช่วงสะพานพระราม 9 ชะลอตัว ให้ใช้สะพานกาญจนาภิเษกวงแหวนใต้แทน เลนกว้างกว่าและคล่องตัวกว่า'
+  },
+  {
+    id: 'wongsawang_lamlukka',
+    name: 'วงศ์สว่าง / ประชาชื่น ➔ ลำลูกกา / พหลโยธิน',
+    origins: ['วงศ์สว่าง', 'ประชาชื่น', 'ประชานุกูล', 'ประชานิเวศน์'],
+    dests: ['ลำลูกกา', 'พหลโยธิน', 'ปทุมธานี'],
+    match: ['วงศ์สว่าง', 'ประชาชื่น', 'ประชานุกูล', 'ประชานิเวศน์', 'ลำลูกกา', 'พหลโยธิน', 'ปทุมธานี'],
+    primary: {
+      name: 'วงศ์สว่าง ➔ แยกประชานุกูล ➔ ถ.วิภาวดี ➔ พหลโยธิน',
+      cams: ['ITICM_BMAMI0213', 'ITICM_BMAMI0188', 'DOH-PER-3-017'],
+      via: 'ถ.รัชดาภิเษก ➔ แยกประชานุกูล ➔ ต่างระดับรัชวิภา ➔ ถ.วิภาวดีรังสิต ➔ ลำลูกกา'
+    },
+    bypass: {
+      name: 'ข้ามสะพานพระราม 7 ➔ บางซื่อ ➔ โทลล์เวย์ด่านรัชดา หรือ ถ.เลียบคลองประปา',
+      cams: ['ITICM_BMAMI0165', 'ITICM_BMAMI0210', 'DOHBHS0016', 'DOH-PER-3-017'],
+      via: 'เลี่ยงแยกประชานุกูลโดยตัดออกถนนประชาชื่นเลียบคลองประปา หรือขึ้นโทลล์เวย์ด่านรัชดาภิเษก'
+    },
+    tip: 'หากแยกประชานุกูลมีรถติดขัด ให้ขึ้นสะพานข้ามแยกหรือใช้ทางเบี่ยงรัชดา-ประชาชื่น'
+  },
+  {
+    id: 'phutthamonthon_bkk',
+    name: 'พุทธมณฑล / นครปฐม ➔ เข้าสู่ตัวเมืองกรุงเทพฯ',
+    origins: ['พุทธมณฑล', 'กระทุ่มล้ม', 'นครปฐม', 'ศาลายา'],
+    dests: ['ตัวเมือง', 'กรุงเทพ', 'บรมราชชนนี', 'เพชรเกษม', 'ปิ่นเกล้า', 'พระราม7', 'จตุจักร'],
+    match: ['พุทธมณฑล', 'กระทุ่มล้ม', 'นครปฐม', 'บรมราชชนนี', 'เพชรเกษม', 'ศาลายา', 'ปิ่นเกล้า'],
+    primary: {
+      name: 'ถ.เพชรเกษม / ถ.บรมราชชนนี (ระดับพื้นราบ)',
+      cams: ['DOH-PER-12-016', 'DOH-PER-12-016-out'],
+      via: 'ถ.พุทธมณฑลสาย 4 ➔ ถ.เพชรเกษม หรือ ถ.บรมราชชนนี มุ่งหน้าสะพานสมเด็จพระปิ่นเกล้า'
+    },
+    bypass: {
+      name: 'ทางคู่ขนานลอยฟ้าบรมราชชนนี ➔ ทางพิเศษประจิมรัถยา ข้ามสะพานพระราม 7',
+      cams: ['DOH-PER-12-016', 'ITICM_BMAMI0166'],
+      via: 'ขึ้นทางคู่ขนานลอยฟ้าบรมราชชนนี ➔ เชื่อมต่อทางพิเศษประจิมรัถยา ข้ามสะพานพระราม 7 เข้าสู่จตุจักร/พระราม 9'
+    },
+    tip: 'ใช้คู่ขนานลอยฟ้าบรมราชชนนีเพื่อข้ามแยกสาย 2 สาย 3 และเลี่ยงไฟแดงตลอดสาย'
+  }
+];
+
+function formatCamSummary(camId, ctx) {
+  const cam = ctx.cams.find(c => c.id === camId);
+  const title = cam ? cam.title : camId;
+  const det = ctx.detMap.get(camId);
+  if (det && det.total !== null) {
+    const spd = det.area_speed;
+    const spdStr = spd ? `ความเร็ว ${spd.avg_px_s} px/s · จอดนิ่ง ${spd.stopped_pct}%` : `ตรวจพบ ${det.total} คัน`;
+    return `[🎥 ${title}](cam:${camId}) (*${spdStr}*)`;
+  }
+  return `[🎥 ${title}](cam:${camId})`;
+}
+
+function evaluateLeg(camIds, ctx) {
+  let isJam = false;
+  let isSlow = false;
+  let maxStopped = 0;
+  let minSpeed = 999;
+  let totalVehicles = 0;
+
+  camIds.forEach(id => {
+    const det = ctx.detMap.get(id);
+    if (det && det.total !== null) {
+      totalVehicles += det.total;
+      if (det.area_speed) {
+        if (det.area_speed.status === 'jam') isJam = true;
+        if (det.area_speed.status === 'slow') isSlow = true;
+        maxStopped = Math.max(maxStopped, det.area_speed.stopped_pct || 0);
+        minSpeed = Math.min(minSpeed, det.area_speed.avg_px_s || 0);
+      }
+    }
+  });
+
+  return {
+    isJam: isJam || maxStopped >= 60,
+    isSlow: isSlow || maxStopped >= 35,
+    maxStopped,
+    minSpeed: minSpeed === 999 ? null : minSpeed,
+    totalVehicles,
+    statusText: (isJam || maxStopped >= 60) ? '🔴 ติดขัดสะสม' : (isSlow || maxStopped >= 35) ? '🟡 ชะลอตัว' : '🟢 คล่องตัว'
+  };
+}
+
+function evaluateRoutePreset(preset, ctx) {
+  const relatedCams = [...preset.primary.cams, ...preset.bypass.cams];
+  const priEval = evaluateLeg(preset.primary.cams, ctx);
+  const bypEval = evaluateLeg(preset.bypass.cams, ctx);
+
+  let reply = `### 🗺️ แผนที่นำทางและทางเลี่ยง: **${preset.name}**\n\n`;
+
+  reply += `#### 1. เส้นทางหลัก: **${preset.primary.name}**\n`;
+  reply += `- **สถานะปัจจุบัน**: **${priEval.statusText}**\n`;
+  reply += `- **แนวเส้นทาง**: ${preset.primary.via}\n`;
+  reply += `- **จุดตรวจกล้องสด**: ${preset.primary.cams.map(c => formatCamSummary(c, ctx)).join(', ')}\n\n`;
+
+  reply += `#### 2. เส้นทางเลี่ยง (Bypass): **${preset.bypass.name}**\n`;
+  reply += `- **สถานะปัจจุบัน**: **${bypEval.statusText}**\n`;
+  reply += `- **แนวเส้นทาง**: ${preset.bypass.via}\n`;
+  reply += `- **จุดตรวจกล้องสด**: ${preset.bypass.cams.map(c => formatCamSummary(c, ctx)).join(', ')}\n\n`;
+
+  reply += `#### 💡 คำแนะนำการเดินทางจาก AI:\n`;
+  if (priEval.isJam && !bypEval.isJam) {
+    reply += `> 🏆 **แนะนำใช้เส้นทางเลี่ยง**: **${preset.bypass.name}** ทันที! เนื่องจากเส้นทางหลักพบจุดติดขัดสะสม (สัดส่วนจอดนิ่งสูงถึง ${priEval.maxStopped}%) การใช้ทางเลี่ยงจะช่วยประหยัดเวลาได้ประมาณ 20-35 นาที\n`;
+  } else if (!priEval.isJam && bypEval.isJam) {
+    reply += `> 🏆 **แนะนำใช้เส้นทางหลัก**: **${preset.primary.name}** เนื่องจากทางเลี่ยงมีปริมาณรถสะสมหนาแน่นกว่า\n`;
+  } else if (!priEval.isJam && !bypEval.isJam) {
+    reply += `> 🟢 **ทั้ง 2 เส้นทางคล่องตัวดี**: แนะนำใช้ **${preset.primary.name}** ซึ่งระยะทางสั้นและตรงกว่า\n`;
+  } else {
+    reply += `> ⚠️ **ทั้ง 2 เส้นทางมีความหนาแน่นสูง**: แนะนำเผื่อเวลาเดินทางอย่างน้อย 30-45 นาที\n`;
+  }
+
+  if (preset.tip) {
+    reply += `\n📌 *เกร็ดข้อควรระวัง*: ${preset.tip}\n`;
+  }
+
+  return { reply, relatedCams };
+}
+
 /**
  * Built-in Intelligent Traffic Engine (Offline / Local RAG)
  */
 function runBuiltInEngine(query, ctx, selectedCamId) {
   const q = (query || '').trim().toLowerCase();
+  const normQ = q.replace(/\s+/g, '');
   const relatedCams = [];
 
-  // 1. If asking about a specific selected camera
+  // 1. Navigation & Route Bypass Queries: "นำทาง", "ทางเลี่ยง", "เส้นทาง", "ไปทางไหน", "จาก ... ไป ...", "เลี่ยง"
+  const isNavQuery = q.includes('นำทาง') || q.includes('เส้นทาง') || q.includes('ทางเลี่ยง') ||
+                     q.includes('เลี่ยง') || q.includes('ไปทางไหน') || q.includes('เดินทาง') ||
+                     q.includes('route') || q.includes('bypass') ||
+                     (normQ.includes('จาก') && (normQ.includes('ไป') || normQ.includes('ถึง')));
+
+  if (isNavQuery) {
+    let matchedPreset = null;
+    if (selectedCamId) {
+      matchedPreset = ROUTE_PRESETS.find(preset =>
+        preset.primary.cams.includes(selectedCamId) || preset.bypass.cams.includes(selectedCamId)
+      );
+    }
+    if (!matchedPreset) {
+      let bestPreset = null;
+      let maxScore = 0;
+      ROUTE_PRESETS.forEach(preset => {
+        let score = 0;
+        const oHit = (preset.origins || []).some(o => normQ.includes(o.toLowerCase()));
+        const dHit = (preset.dests || []).some(d => normQ.includes(d.toLowerCase()));
+        if (oHit) score += 3;
+        if (dHit) score += 3;
+        const kwHits = (preset.match || []).filter(m => normQ.includes(m.toLowerCase())).length;
+        score += kwHits;
+
+        if (score > maxScore) {
+          maxScore = score;
+          bestPreset = preset;
+        }
+      });
+      if (maxScore >= 4 || (maxScore >= 2 && (normQ.includes('ไป') || normQ.includes('เลี่ยง') || normQ.includes('ทาง') || normQ.includes('นำทาง')))) {
+        matchedPreset = bestPreset;
+      }
+    }
+
+    if (matchedPreset) {
+      return evaluateRoutePreset(matchedPreset, ctx);
+    }
+
+    // If specific camera requested bypass
+    if (selectedCamId) {
+      const cam = ctx.cams.find(c => c.id === selectedCamId);
+      if (cam) {
+        relatedCams.push(cam.id);
+        const det = ctx.detMap.get(cam.id);
+        const spd = det && det.area_speed;
+        let reply = `### 🗺️ คำแนะนำทางเลี่ยงจุดวิกฤติ: **${cam.title}**\n\n`;
+        reply += `- **สถานะปัจจุบันที่จุดนี้**: ${det && det.total !== null ? `ตรวจพบรถ **${det.total} คัน**` : 'กำลังประมวลผล'}`;
+        if (spd) {
+          reply += ` · ความเร็ว **${spd.avg_px_s} px/s** (สถานะ: **${spd.status_th || spd.status}**, จอดนิ่ง **${spd.stopped_pct}%**)`;
+        }
+        reply += `\n\n`;
+        if (spd && (spd.status === 'jam' || spd.stopped_pct >= 50)) {
+          reply += `🚨 **ข้อแนะนำเร่งด่วน**: จุดนี้มีรถสะสมหนาแน่นสูง แนะนำเลี่ยงเข้าโครงข่ายทางด่วนใกล้เคียงหรือใช้ถนนคู่ขนาน\n`;
+        } else {
+          reply += `🟢 **ข้อแนะนำ**: สภาพการจราจร ณ จุดนี้ยังเคลื่อนตัวได้ตามปกติ สามารถใช้เส้นทางตรงได้\n`;
+        }
+        reply += `\n**🛣️ เส้นทางหลักและทางเลี่ยงเมืองสำคัญที่แนะนำ**:\n`;
+        ROUTE_PRESETS.slice(0, 4).forEach((p, idx) => {
+          reply += `${idx + 1}. **${p.name}**\n   - ทางเลี่ยง: ${p.bypass.name}\n`;
+        });
+        return { reply, relatedCams };
+      }
+    }
+
+    // Generic Navigation Hub & live bottlenecks
+    let reply = `### 🗺️ ศูนย์วางแผนเส้นทางและทางเลี่ยงเมืองอัจฉริยะ (BKK Smart Bypass Navigator)\n\n`;
+
+    reply += `**🚨 จุดคอขวดวิกฤติที่ควรหลีกเลี่ยงขณะนี้ (Live Bottlenecks)**:\n`;
+    const topBottlenecks = ctx.busyCams.filter(d => d.area_speed && (d.area_speed.status === 'jam' || d.area_speed.stopped_pct >= 50)).slice(0, 3);
+    if (topBottlenecks.length > 0) {
+      topBottlenecks.forEach(d => {
+        relatedCams.push(d.id);
+        reply += `- [🎥 ${d.title}](cam:${d.id}): ตรวจพบรถ **${d.total} คัน** · ความเร็ว **${d.area_speed.avg_px_s} px/s** (จอดนิ่งสะสม **${d.area_speed.stopped_pct}%**)\n`;
+      });
+    } else {
+      reply += `- ✅ โครงข่ายหลักส่วนใหญ่ยังไม่มีจุดติดขัดสะสมรุนแรง\n`;
+    }
+
+    reply += `\n**🛣️ เส้นทางเชื่อมต่อหลักที่แนะนำการวิเคราะห์ทางเลี่ยง**:\n`;
+    ROUTE_PRESETS.forEach((p, idx) => {
+      reply += `${idx + 1}. **${p.name}**\n   - *ทางหลัก*: ${p.primary.name}\n   - *ทางเลี่ยง*: ${p.bypass.name}\n`;
+    });
+
+    reply += `\n💬 *พิมพ์ถามเจาะจงได้ทันที เช่น "จากดอนเมืองไปสาทร" หรือ "ทางเลี่ยงพระราม 4"*`;
+    return { reply, relatedCams };
+  }
+
+  // 2. If asking about a specific selected camera (general count / speed)
   if (selectedCamId) {
     const cam = ctx.cams.find(c => c.id === selectedCamId);
     if (cam) {
@@ -106,8 +384,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
     }
   }
 
-  // 2. Road or Junction specific search in query
-  const normQ = q.replace(/\s+/g, '');
+  // 3. Road or Junction specific search in query
   const matchedRoad = ctx.sortedRoads.find(r => {
     const normName = r.name.toLowerCase().replace(/\s+/g, '');
     if (normQ.includes(normName) || normName.includes(normQ)) return true;
@@ -282,10 +559,18 @@ ${ctx.busyCams.slice(0, 5).map(d => {
   return `- กล้อง ${d.title} (ID: ${d.id}): พบรถ ${d.total} คัน ${spd}`;
 }).join('\n')}
 
+[ความสามารถในการนำทางและเสนอเส้นทางเลี่ยง (Navigation & Bypass AI)]:
+คุณสามารถวางแผนเส้นทางและเสนอทางเลี่ยงรถติดได้อย่างแม่นยำ โดยเปรียบเทียบระหว่างเส้นทางหลักและทางเลี่ยงจากข้อมูลภาพกล้อง CCTV สด, ความเร็วพื้นที่จริง (px/s), สัดส่วนรถจอดนิ่ง (%), และ Longdo Index:
+- เหนือ ➔ ใจกลางเมือง: ดอนเมือง/วิภาวดี ➔ สาทร/สีลม (เทียบทางด่วนเฉลิมมหานคร vs ทางด่วนศรีรัช)
+- ตะวันตก ➔ ใจกลางเมือง: บางใหญ่/กาญจนาภิเษก ➔ อโศก/พระราม 4 (เทียบรัตนาธิเบศร์-แคราย vs ทางด่วนประจิมรัถยา-พระราม 7)
+- เหนือ ➔ ตะวันออกเฉียงเหนือ: วงศ์สว่าง/ประชานุกูล ➔ ลำลูกกา/พหลโยธิน
+- ตะวันออก ➔ ตะวันตกเฉียงใต้: บางนา-ตราด ➔ พระราม 2 (เทียบสะพานพระราม 9 vs สะพานกาญจนาภิเษกวงแหวนใต้)
+หากผู้ใช้ถามเรื่องการเดินทาง นำทาง หรือหาทางเลี่ยง ให้เปรียบเทียบ 2 เส้นทาง ระบุข้อดี/ข้อเสีย จุดคอขวดที่ต้องเลี่ยง พร้อมใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) ให้ตรวจเช็คสภาพจริงเสมอ
+
 คำแนะนำการตอบ:
 1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น
 2. เมื่อกล่าวถึงกล้องใดๆ ให้ใส่ลิงก์ในรูปแบบ [🎥 ชื่อกล้อง](cam:CAM_ID) เพื่อให้ผู้ใช้กดดูภาพสดได้ทันที
-3. วิเคราะห์ทั้งด้านปริมาณรถ, ความเร็วพื้นที่จริง, และการบริหารจัดการสัญญาณไฟจราจร
+3. วิเคราะห์ทั้งด้านปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
 `;
 
   const contents = [];
