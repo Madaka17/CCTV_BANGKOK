@@ -392,17 +392,35 @@ function paintTrafficBadges() {
   state.cameras.forEach(cam => {
     const slot = el('tb-' + cssId(cam.id));
     if (!slot) return;
+
+    // 1. Prioritize AI Video Area Speed if available
+    const det = state.detections.get(cam.id);
+    if (det && det.area_speed && det.area_speed.status) {
+      const spd = det.area_speed;
+      if (spd.status === 'jam') {
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shadow-sm shadow-rose-600/50 flex items-center gap-1" title="วิดีโอ AI ตรวจจับ: ติดขัดสะสม ${spd.stopped_pct}% จอดนิ่ง"><span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>ติดขัด AI (${spd.avg_px_s} px/s)</span>`;
+        return;
+      } else if (spd.status === 'slow') {
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50" title="วิดีโอ AI ตรวจจับ: ชะลอตัว">ชะลอตัว AI (${spd.avg_px_s} px/s)</span>`;
+        return;
+      } else if (spd.status === 'flowing') {
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50" title="วิดีโอ AI ตรวจจับ: คล่องตัว">คล่องตัว AI (${spd.avg_px_s} px/s)</span>`;
+        return;
+      }
+    }
+
+    // 2. Fallback to Longdo Map GPS Tiles
     const tr = state.cameraTraffic.get(cam.id);
     if (!tr) {
       slot.innerHTML = '';
       return;
     }
     if (tr.level === 'jam') {
-      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shadow-sm shadow-rose-500/50">ติดขัด</span>';
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shadow-sm shadow-rose-500/50" title="ประมาณจากแผนที่รอบด้าน 700ม.">ติดขัด (แผนที่)</span>';
     } else if (tr.level === 'slow') {
-      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50">ชะลอตัว</span>';
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50" title="ประมาณจากแผนที่รอบด้าน 700ม.">ชะลอตัว (แผนที่)</span>';
     } else if (tr.level === 'flowing') {
-      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50">คล่องตัว</span>';
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50" title="ประมาณจากแผนที่รอบด้าน 700ม.">คล่องตัว (แผนที่)</span>';
     }
   });
 }
@@ -893,11 +911,23 @@ function renderDetailCounts(cam, reading) {
     return;
   }
 
-  const chip = (label, value, tone) =>
-    `<span class="px-3 py-1.5 rounded-xl ${tone} text-xs font-semibold">${label} <span class="font-bold">${value}</span></span>`;
+  let speedChips = '';
+  if (reading.area_speed) {
+    const spd = reading.area_speed;
+    const tone = spd.status === 'jam'
+      ? 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+      : spd.status === 'slow'
+        ? 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+        : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300';
+    speedChips =
+      chip('ความเร็วพื้นที่ AI', spd.avg_px_s + ' px/s', 'bg-purple-500/15 border border-purple-500/30 text-purple-300') +
+      chip('สถานะวิดีโอ', spd.status_th || spd.status, tone) +
+      chip('จอดนิ่งสะสม', spd.stopped_pct + '%', 'bg-slate-800 border border-slate-700 text-slate-300');
+  }
 
   box.innerHTML =
     chip('รวม', reading.total + ' คัน', 'bg-sky-500/15 border border-sky-500/30 text-sky-300') +
+    speedChips +
     Object.entries(reading.counts)
       .map(([k, n]) => chip(LABELS[k] || k, n, 'bg-slate-800 border border-slate-700 text-slate-300'))
       .join('');
@@ -1330,6 +1360,265 @@ function showBuild() {
   }
 }
 
+// --- AI Traffic Chatbot ----------------------------------------------------
+
+const chatState = {
+  history: [],
+  isOpen: false,
+  isGenerating: false,
+  apiKey: localStorage.getItem('bkk_gemini_api_key') || ''
+};
+
+function renderMarkdown(md) {
+  let html = escapeHtml(md);
+
+  // Headers
+  html = html.replace(/^### (.*$)/gim, '<h4 class="font-bold text-slate-900 dark:text-white mt-2 mb-1 text-xs">$1</h4>');
+  html = html.replace(/^## (.*$)/gim, '<h3 class="font-bold text-slate-900 dark:text-white mt-2.5 mb-1 text-sm">$1</h3>');
+
+  // Bold
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-slate-900 dark:text-white">$1</strong>');
+
+  // Italic
+  html = html.replace(/\*(.*?)\*/g, '<em class="italic text-slate-500 dark:text-slate-400">$1</em>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.*$)/gim, '<div class="pl-2.5 py-1 my-1 border-l-2 border-purple-500 bg-purple-500/10 rounded-r text-[11px] text-slate-700 dark:text-slate-300">$1</div>');
+
+  // Camera links: [text](cam:ID) -> clickable button
+  html = html.replace(/\[(.*?)\]\(cam:([A-Za-z0-9_-]+)\)/g, '<a href="cam:$2" class="chat-cam-link" data-open-cam="$2">$1</a>');
+
+  // Line breaks
+  html = html.replace(/\n/g, '<br/>');
+  return html;
+}
+
+function appendChatMessage(role, content) {
+  const container = el('chat-messages');
+  if (!container) return;
+
+  const msgDiv = document.createElement('div');
+  msgDiv.className = `chat-msg ${role} flex gap-2.5 items-start`;
+
+  const isUser = role === 'user';
+  const avatar = isUser
+    ? `<div class="w-7 h-7 rounded-lg bg-slate-700 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm text-[10px] font-bold">ME</div>`
+    : `<div class="w-7 h-7 rounded-lg bg-gradient-to-br from-rose-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm shadow-purple-500/20">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      </div>`;
+
+  const bubble = document.createElement('div');
+  bubble.className = isUser
+    ? 'chat-bubble p-2.5 px-3 rounded-2xl rounded-tr-sm bg-gradient-to-r from-rose-500 via-purple-600 to-indigo-600 text-white leading-relaxed text-xs'
+    : 'chat-bubble flex-1 p-3 rounded-2xl rounded-tl-sm bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60 leading-relaxed shadow-sm text-xs';
+
+  bubble.innerHTML = isUser ? escapeHtml(content) : renderMarkdown(content);
+
+  // Bind cam clicks
+  bubble.querySelectorAll('[data-open-cam]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const camId = a.dataset.openCam;
+      const cam = state.cameras.find(c => c.id === camId);
+      if (cam) {
+        openDetail(cam);
+      }
+    });
+  });
+
+  if (isUser) {
+    msgDiv.appendChild(bubble);
+    msgDiv.appendChild(createNodeFromHtml(avatar));
+  } else {
+    msgDiv.appendChild(createNodeFromHtml(avatar));
+    msgDiv.appendChild(bubble);
+  }
+
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+}
+
+function createNodeFromHtml(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+
+function showTypingIndicator() {
+  const container = el('chat-messages');
+  if (!container) return;
+  removeTypingIndicator();
+
+  const ind = document.createElement('div');
+  ind.id = 'chat-typing-indicator';
+  ind.className = 'chat-msg assistant flex gap-2.5 items-start';
+  ind.innerHTML = `
+    <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-rose-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm shadow-purple-500/20">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+    </div>
+    <div class="chat-bubble p-3 rounded-2xl rounded-tl-sm bg-slate-100 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700/60 flex items-center gap-1.5 text-purple-600 dark:text-purple-400">
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+    </div>
+  `;
+  container.appendChild(ind);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  const ind = el('chat-typing-indicator');
+  if (ind) ind.remove();
+}
+
+async function sendChatMessage(query, selectedCamId = '') {
+  const q = (query || '').trim();
+  if (!q || chatState.isGenerating) return;
+
+  appendChatMessage('user', q);
+  chatState.history.push({ role: 'user', content: q });
+  chatState.isGenerating = true;
+  showTypingIndicator();
+
+  const input = el('chat-input');
+  if (input) input.value = '';
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: q,
+        history: chatState.history,
+        apiKey: chatState.apiKey,
+        selectedCamId: selectedCamId
+      })
+    });
+
+    const data = await res.json();
+    removeTypingIndicator();
+
+    if (data.error) {
+      appendChatMessage('assistant', `⚠️ เกิดข้อผิดพลาด: ${data.error}`);
+    } else {
+      appendChatMessage('assistant', data.reply);
+      chatState.history.push({ role: 'assistant', content: data.reply });
+      if (data.mode === 'gemini') {
+        updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+      }
+    }
+  } catch (err) {
+    removeTypingIndicator();
+    appendChatMessage('assistant', `⚠️ เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ (${err.message})`);
+  } finally {
+    chatState.isGenerating = false;
+  }
+}
+
+function updateChatModeBadge(text, cls) {
+  const b = el('chat-mode-badge');
+  if (!b) return;
+  b.textContent = text;
+  b.className = `px-1.5 py-0.5 rounded text-[9px] font-bold ${cls}`;
+}
+
+function toggleChatDrawer(open) {
+  const drawer = el('chat-drawer');
+  if (!drawer) return;
+  const show = open === undefined ? drawer.classList.contains('hidden') : open;
+  drawer.classList.toggle('hidden', !show);
+  chatState.isOpen = show;
+  if (show) {
+    const input = el('chat-input');
+    if (input) setTimeout(() => input.focus(), 150);
+  }
+}
+
+function initChatbot() {
+  const btnToggle = el('btn-toggle-chat');
+  if (btnToggle) btnToggle.addEventListener('click', () => toggleChatDrawer());
+  const sideTab = el('tab-chat');
+  if (sideTab) sideTab.addEventListener('click', () => toggleChatDrawer(true));
+  const closeBtn = el('chat-btn-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => toggleChatDrawer(false));
+
+  const form = el('chat-form');
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = el('chat-input');
+      if (input) sendChatMessage(input.value);
+    });
+  }
+
+  document.querySelectorAll('[data-quick-prompt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      sendChatMessage(btn.dataset.quickPrompt);
+    });
+  });
+
+  const askAiBtn = el('detail-ask-ai');
+  if (askAiBtn) {
+    askAiBtn.addEventListener('click', () => {
+      if (state.detail) {
+        toggleChatDrawer(true);
+        sendChatMessage(`วิเคราะห์สภาพจราจรและปริมาณรถของกล้อง ${state.detail.title}`, state.detail.id);
+      }
+    });
+  }
+
+  const clearBtn = el('chat-btn-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      chatState.history = [];
+      const msgBox = el('chat-messages');
+      if (msgBox) {
+        msgBox.innerHTML = `
+          <div class="chat-msg assistant flex gap-2.5 items-start">
+            <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-rose-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm shadow-purple-500/20">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <div class="chat-bubble flex-1 p-3 rounded-2xl rounded-tl-sm bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60 leading-relaxed shadow-sm text-xs">
+              <p class="font-bold text-slate-900 dark:text-white mb-1">ล้างประวัติการสนทนาเรียบร้อยครับ 🚦</p>
+              <p>สามารถสอบถามสภาพจราจรใหม่ได้ทันทีครับ</p>
+            </div>
+          </div>
+        `;
+      }
+    });
+  }
+
+  const settingsBtn = el('chat-btn-settings');
+  const settingsPanel = el('chat-settings-panel');
+  const apiKeyInput = el('chat-input-apikey');
+  const saveKeyBtn = el('chat-btn-save-key');
+
+  if (apiKeyInput && chatState.apiKey) {
+    apiKeyInput.value = chatState.apiKey;
+    updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+  }
+
+  if (settingsBtn && settingsPanel) {
+    settingsBtn.addEventListener('click', () => {
+      settingsPanel.classList.toggle('hidden');
+    });
+  }
+
+  if (saveKeyBtn && apiKeyInput) {
+    saveKeyBtn.addEventListener('click', () => {
+      const key = apiKeyInput.value.trim();
+      chatState.apiKey = key;
+      localStorage.setItem('bkk_gemini_api_key', key);
+      if (key) {
+        updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+      } else {
+        updateChatModeBadge('Built-in AI', 'bg-purple-500/15 text-purple-600 dark:text-purple-300');
+      }
+      if (settingsPanel) settingsPanel.classList.add('hidden');
+    });
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   showBuild();
   startClock();
@@ -1338,6 +1627,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadCameras();
   loadAdvice();
   loadTrafficIndex();
+  initChatbot();
 
   const btn = el('btn-refresh');
   if (btn) btn.addEventListener('click', () => { loadCameras(); loadAdvice(); loadTrafficIndex(); });

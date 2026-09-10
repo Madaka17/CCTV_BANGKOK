@@ -11,6 +11,7 @@ const url = require('node:url');
 const crypto = require('node:crypto');
 
 const { buildAdvice } = require('./traffic-advice.js');
+const { handleChat } = require('./traffic-bot.js');
 
 const PORT = process.env.PORT || 3000;
 
@@ -337,7 +338,7 @@ const requestHandler = async (req, res) => {
   const pathname = parsedUrl.pathname;
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
 
   if (req.method === 'OPTIONS') {
@@ -347,6 +348,70 @@ const requestHandler = async (req, res) => {
   }
 
   // --- API Routes ---
+
+  // AI Traffic Chatbot API
+  if (pathname === '/api/chat' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(raw || '{}');
+        const query = payload.message || payload.query || '';
+        const history = payload.history || [];
+        const apiKey = payload.apiKey || '';
+        const selectedCamId = payload.selectedCamId || '';
+
+        const { list: cameras } = await loadVideoCameras();
+
+        let adviceData = adviceCache.data;
+        if (!adviceData || Date.now() - adviceCache.at > ADVICE_TTL_MS) {
+          try {
+            adviceData = await buildAdvice(cameras, { userAgent: USER_AGENT });
+            adviceCache = { at: Date.now(), data: adviceData };
+          } catch (e) {
+            adviceData = { roads: [] };
+          }
+        }
+
+        let detectionsData = { detections: [] };
+        try {
+          const detRes = await fetch(`${DETECTOR_URL}/detections`, { signal: AbortSignal.timeout(3000) });
+          if (detRes.ok) detectionsData = await detRes.json();
+        } catch (e) {}
+
+        let trafficIndex = 'ปกติ (2.1)';
+        try {
+          const tiRes = await fetch(`https://traffic.longdo.com/api/json/traffic/index?time=${Date.now()}`, {
+            headers: { 'User-Agent': USER_AGENT },
+            signal: AbortSignal.timeout(3000)
+          });
+          if (tiRes.ok) {
+            const tiData = await tiRes.json();
+            const idx = Number(tiData.index);
+            const lbl = idx < 4 ? 'คล่องตัว' : idx < 7 ? 'ชะลอตัว' : 'ติดขัด';
+            trafficIndex = `${idx.toFixed(1)} (${lbl})`;
+          }
+        } catch (e) {}
+
+        const chatResponse = await handleChat(query, {
+          history,
+          apiKey,
+          selectedCamId,
+          cameras,
+          adviceData,
+          detectionsData,
+          trafficIndex
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(chatResponse));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: err.message || 'Chat error' }));
+      }
+    });
+    return;
+  }
 
 
   // What recorder/record.py kept: ten minutes of one camera per file, listed

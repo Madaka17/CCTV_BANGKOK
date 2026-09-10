@@ -660,3 +660,92 @@ body.hide-toolbar #toolbar {
   filter: invert(93%) hue-rotate(180deg) brightness(88%) contrast(112%);
 }
 
+/* =========================================================================
+   AI TRAFFIC CHATBOT STYLES
+   ========================================================================= */
+
+.chat-chip {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.12);
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.dark .chat-chip {
+  background: rgba(30, 41, 59, 0.7);
+  color: #94a3b8;
+  border-color: rgba(51, 65, 85, 0.8);
+}
+
+.chat-chip:hover {
+  background: rgba(168, 85, 247, 0.18);
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #9333ea;
+  transform: translateY(-1px);
+}
+
+.dark .chat-chip:hover {
+  color: #c084fc;
+  border-color: rgba(192, 132, 252, 0.5);
+}
+
+.chat-msg.user .chat-bubble {
+  background: linear-gradient(135deg, #e11d48, #9333ea);
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+  margin-left: auto;
+  box-shadow: 0 4px 12px rgba(147, 51, 234, 0.25);
+}
+
+.chat-bubble a[href^="cam:"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  margin: 1px 2px;
+  border-radius: 8px;
+  background: rgba(225, 29, 72, 0.12);
+  border: 1px solid rgba(225, 29, 72, 0.35);
+  color: #e11d48;
+  font-weight: 600;
+  font-size: 11px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.dark .chat-bubble a[href^="cam:"] {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.4);
+  color: #fb7185;
+}
+
+.chat-bubble a[href^="cam:"]:hover {
+  background: rgba(225, 29, 72, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(225, 29, 72, 0.25);
+}
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 0.9; }
+}
+

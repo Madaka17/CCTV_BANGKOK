@@ -16,8 +16,8 @@ The web server proxies these at /api/detections and /api/detect-frame/<id>.
 """
 
 import argparse
-
 import json
+import math
 import threading
 import time
 import urllib.parse
@@ -302,6 +302,7 @@ class FlowTracker:
 
     def reset(self):
         self.prev_gray = None
+        self.prev_time = None
         self.tracks = {}
         self.next_id = 0
         self.frames = 0
@@ -323,10 +324,12 @@ class FlowTracker:
         return cv2.resize(gray, None, fx=self.flow_scale, fy=self.flow_scale)
 
     def _propagate(self, gray):
-        """Move every track by the flow under its centre."""
+        """Move every track by the flow under its centre and compute motion velocity."""
         if self.prev_gray is None or not self.tracks:
             return {}
 
+        now = time.time()
+        dt = max(0.01, now - self.prev_time) if self.prev_time else 0.1
         flow = self.flow.calc(self.prev_gray, gray, None)
         fh, fw = flow.shape[:2]
         scale = 1.0 / self.flow_scale
@@ -339,11 +342,23 @@ class FlowTracker:
             if not (0 <= cy < fh and 0 <= cx < fw):
                 continue  # left the picture
 
-            du, dv = flow[cy, cx] * scale
+            y_min, y_max = max(0, cy - 1), min(fh, cy + 2)
+            x_min, x_max = max(0, cx - 1), min(fw, cx + 2)
+            flow_win = flow[y_min:y_max, x_min:x_max]
+            du = float(np.median(flow_win[..., 0])) * scale
+            dv = float(np.median(flow_win[..., 1])) * scale
+
+            disp = math.sqrt(du * du + dv * dv)
+            inst_speed = disp / dt
+            prev_speed = t.get("speed", inst_speed)
+            speed = prev_speed * 0.4 + inst_speed * 0.6
+
             moved[tid] = {
                 **t,
                 "bbox": [int(x1 + du), int(y1 + dv), int(x2 + du), int(y2 + dv)],
                 "age": t["age"] + 1,
+                "speed": round(speed, 1),
+                "is_stopped": speed < 3.5,
             }
         return moved
 
@@ -364,19 +379,63 @@ class FlowTracker:
             if best_iou >= self.iou_threshold:
                 det = detections[best]
                 taken.add(best)
-                result[tid] = {"bbox": det["bbox"], "name": det["name"],
-                               "conf": det["conf"], "age": 0}
+                spd = t.get("speed", 0.0)
+                result[tid] = {
+                    "bbox": det["bbox"], "name": det["name"],
+                    "conf": det["conf"], "age": 0,
+                    "speed": spd, "is_stopped": spd < 3.5
+                }
             elif t["age"] < self.max_age:
                 result[tid] = t
 
         for i, det in enumerate(detections):
             if i in taken:
                 continue
-            result[self.next_id] = {"bbox": det["bbox"], "name": det["name"],
-                                    "conf": det["conf"], "age": 0}
+            result[self.next_id] = {
+                "bbox": det["bbox"], "name": det["name"],
+                "conf": det["conf"], "age": 0,
+                "speed": 0.0, "is_stopped": True
+            }
             self.next_id += 1
 
         return result
+
+    def get_area_metrics(self):
+        """Evaluate Space Mean Speed, stopped ratio, and overall traffic status."""
+        total = len(self.tracks)
+        if total == 0:
+            return {
+                "avg_px_s": 0.0,
+                "status": "empty",
+                "status_th": "ถนนว่าง",
+                "stopped_count": 0,
+                "moving_count": 0,
+                "stopped_pct": 0.0,
+            }
+
+        speeds = [t.get("speed", 0.0) for t in self.tracks.values()]
+        stopped = sum(1 for s in speeds if s < 3.5)
+        moving = total - stopped
+        avg_spd = sum(speeds) / total
+        stopped_pct = (stopped / total) * 100.0
+
+        if total <= 2:
+            status, status_th = "empty", "ถนนโล่ง"
+        elif stopped_pct >= 65.0:
+            status, status_th = "jam", "ติดขัดสะสม"
+        elif avg_spd < 12.0 or stopped_pct >= 35.0:
+            status, status_th = "slow", "ชะลอตัว"
+        else:
+            status, status_th = "flowing", "คล่องตัว"
+
+        return {
+            "avg_px_s": round(avg_spd, 1),
+            "status": status,
+            "status_th": status_th,
+            "stopped_count": stopped,
+            "moving_count": moving,
+            "stopped_pct": round(stopped_pct, 1),
+        }
 
     def update(self, frame, detect_fn):
         """One frame in, the current tracks out."""
@@ -392,6 +451,7 @@ class FlowTracker:
             self.tracks = {tid: t for tid, t in moved.items() if t["age"] < self.max_age}
 
         self.prev_gray = gray
+        self.prev_time = time.time()
         self.frames += 1
         return self.tracks, due
 
@@ -400,22 +460,24 @@ TRACK_COLOURS = [(80, 200, 12), (4, 222, 254), (255, 120, 20), (32, 32, 255),
                  (255, 80, 200), (240, 200, 40), (120, 255, 255)]
 
 
-def draw_tracks(frame, tracks):
+def draw_tracks(frame, tracks, area_metrics=None):
     for tid, t in tracks.items():
         x1, y1, x2, y2 = t["bbox"]
         colour = TRACK_COLOURS[tid % len(TRACK_COLOURS)]
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-        label = f"#{tid} {t['name']}"
+        spd = t.get("speed", 0.0)
+        label = f"#{tid} {t['name']} {spd:.0f}px/s"
         cv2.rectangle(frame, (x1, y1 - 16), (x1 + 8 * len(label), y1), colour, -1)
         cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
-    banner = f"{len(tracks)} vehicles"
-    cv2.rectangle(frame, (8, 8), (8 + 11 * len(banner), 34), (0, 0, 0), -1)
-    cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    status_str = f" · {area_metrics['status_th']} ({area_metrics['avg_px_s']} px/s)" if area_metrics else ""
+    banner = f"{len(tracks)} vehicles{status_str}"
+    cv2.rectangle(frame, (8, 8), (8 + 10 * len(banner), 34), (0, 0, 0), -1)
+    cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
     return frame
 
 
-def tracks_to_reading(cam, tracks, width, height):
+def tracks_to_reading(cam, tracks, width, height, area_metrics=None):
     counts = {}
     boxes = []
     for tid, t in tracks.items():
@@ -425,11 +487,17 @@ def tracks_to_reading(cam, tracks, width, height):
             "id": tid, "k": t["name"], "c": round(t["conf"], 2),
             "x": round(x1 / width, 4), "y": round(y1 / height, 4),
             "w": round((x2 - x1) / width, 4), "h": round((y2 - y1) / height, 4),
+            "spd": round(t.get("speed", 0.0), 1),
+            "stp": t.get("speed", 0.0) < 3.5,
         })
     return {
         "id": cam["id"], "title": cam["title"], "total": len(tracks),
         "counts": counts, "boxes": boxes, "at": time.time(),
         "ms": 0, "error": None, "live": True,
+        "area_speed": area_metrics or {
+            "avg_px_s": 0.0, "status": "flowing", "status_th": "คล่องตัว",
+            "stopped_count": 0, "moving_count": len(tracks), "stopped_pct": 0.0
+        },
     }
 
 
@@ -538,13 +606,14 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
                     continue
 
                 height, width = frame.shape[:2]
-                annotated = draw_tracks(frame, tracks)
+                area_metrics = tracker.get_area_metrics()
+                annotated = draw_tracks(frame, tracks, area_metrics)
                 ok, encoded = cv2.imencode(".jpg", annotated,
                                            [int(cv2.IMWRITE_JPEG_QUALITY), 75])
 
                 frames += 1
                 with lock:
-                    state["detections"][cam["id"]] = tracks_to_reading(cam, tracks, width, height)
+                    state["detections"][cam["id"]] = tracks_to_reading(cam, tracks, width, height, area_metrics)
                     if ok:
                         state["frames"][cam["id"]] = encoded.tobytes()
                     state["focus_fps"][cam["id"]] = round(frames / max(1e-6, time.time() - started), 2)

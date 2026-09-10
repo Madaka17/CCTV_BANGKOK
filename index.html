@@ -119,6 +119,15 @@
         <span id="badge-advice-alert" class="ml-auto hidden text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white animate-pulse">!</span>
       </button>
 
+      <!-- หัวที่ 4: AI วิเคราะห์จราจร (Chatbot) -->
+      <button id="tab-chat" class="sidebar-tab !text-purple-600 dark:!text-purple-400 hover:!bg-purple-500/10" title="AI ผู้ช่วยวิเคราะห์การจราจรและแนะนำเส้นทาง">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+        </svg>
+        <span class="truncate">AI ผู้ช่วยจราจร</span>
+        <span class="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-600 dark:text-purple-300">Chat</span>
+      </button>
+
       <!-- Quick View / Watchlist Shortcuts in Sidebar -->
       <div class="pt-5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-3">
         ตัวกรองและกล้องโปรด
@@ -408,6 +417,10 @@
           <p id="detail-org" class="text-[11px] text-slate-500 mt-0.5"></p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <button id="detail-ask-ai" class="icon-btn !w-auto !px-2.5 !h-8 text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 flex items-center gap-1.5 rounded-xl cursor-pointer" title="ถาม AI เกี่ยวกับกล้องนี้">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+            <span>ถาม AI</span>
+          </button>
           <button id="detail-pip-btn" class="icon-btn" title="Picture-in-Picture">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11h-6a1 1 0 00-1 1v4a1 1 0 001 1h6a1 1 0 001-1v-4a1 1 0 00-1-1z"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
           </button>
@@ -437,6 +450,96 @@
         <p id="detail-note" class="mt-3 text-[11px] text-slate-500 leading-relaxed"></p>
       </div>
     </div>
+  </div>
+
+  <!-- Floating AI Assistant Button -->
+  <div id="floating-ai-btn-container" class="fixed bottom-5 right-5 z-40 md:bottom-6 md:right-6">
+    <button id="btn-toggle-chat" class="group relative flex items-center gap-2.5 px-4 py-3 rounded-full bg-gradient-to-r from-rose-500 via-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-600/35 hover:shadow-purple-600/50 hover:scale-[1.03] active:scale-95 transition-all duration-300 cursor-pointer" title="เปิด AI ผู้ช่วยวิเคราะห์จราจร">
+      <span class="relative flex h-2.5 w-2.5">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+      </span>
+      <svg class="w-4 h-4 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+      </svg>
+      <span class="text-xs font-bold tracking-wide">AI วิเคราะห์จราจร</span>
+    </button>
+  </div>
+
+  <!-- =========================================================================
+       AI TRAFFIC CHATBOT DRAWER (Modern Deep Slate Glassmorphism)
+       ========================================================================= -->
+  <div id="chat-drawer" class="hidden fixed bottom-0 right-0 md:bottom-6 md:right-6 z-50 w-full sm:w-[440px] h-[90vh] md:h-[620px] max-h-[92vh] flex flex-col bg-white dark:bg-slate-900/95 border border-slate-300 dark:border-slate-800 md:rounded-3xl shadow-2xl overflow-hidden backdrop-blur-2xl transition-all">
+    
+    <!-- Drawer Header -->
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50/80 dark:bg-slate-900/80">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-rose-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-purple-500/20">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <h3 class="text-xs font-bold text-slate-900 dark:text-white">BKK Traffic AI Copilot</h3>
+            <span id="chat-mode-badge" class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/15 text-purple-600 dark:text-purple-300">Built-in AI</span>
+          </div>
+          <p class="text-[10px] text-slate-500">วิเคราะห์จราจร & CCTV สด 24 ชม.</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button id="chat-btn-clear" class="icon-btn !w-7 !h-7" title="ล้างบทสนทนา">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        </button>
+        <button id="chat-btn-settings" class="icon-btn !w-7 !h-7" title="ตั้งค่า API Key">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        </button>
+        <button id="chat-btn-close" class="icon-btn !w-7 !h-7" title="ย่อหน้าต่าง">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- API Key Settings Bar (Collapsible) -->
+    <div id="chat-settings-panel" class="hidden px-4 py-2.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-xs">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="font-semibold text-slate-700 dark:text-slate-300">Google Gemini API Key</span>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-[10px] text-purple-600 dark:text-purple-400 hover:underline">รับ Key ฟรี &rarr;</a>
+      </div>
+      <div class="flex gap-1.5">
+        <input id="chat-input-apikey" type="password" placeholder="AIzaSy... (เว้นว่างไว้จะใช้ระบบภายใน)" class="flex-1 px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500" />
+        <button id="chat-btn-save-key" class="px-2.5 py-1 rounded-lg bg-purple-600 text-white font-bold hover:bg-purple-700 cursor-pointer">บันทึก</button>
+      </div>
+    </div>
+
+    <!-- Chat Messages Stream -->
+    <div id="chat-messages" class="flex-1 p-4 overflow-y-auto space-y-3.5 text-xs">
+      <!-- Default welcome bubble -->
+      <div class="chat-msg assistant flex gap-2.5 items-start">
+        <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-rose-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm shadow-purple-500/20">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+        </div>
+        <div class="chat-bubble flex-1 p-3 rounded-2xl rounded-tl-sm bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60 leading-relaxed shadow-sm">
+          <p class="font-bold text-slate-900 dark:text-white mb-1">สวัสดีครับ! ผมคือ AI ผู้ช่วยจราจร กทม. 🚦</p>
+          <p>ผมวิเคราะห์ข้อมูลภาพจากกล้อง CCTV สด, จำนวนรถ YOLO, ความเร็วพื้นที่จริง และคำแนะนำสัญญาณไฟแบบ Real-time</p>
+          <p class="mt-2 text-slate-500 dark:text-slate-400 text-[11px]">คลิกเลือกคำถามด่วนด้านล่าง หรือพิมพ์ถามชื่อถนน/ทางแยกได้เลยครับ:</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Prompt Pills -->
+    <div class="px-3 py-2 border-t border-slate-200/60 dark:border-slate-800/60 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+      <button data-quick-prompt="สรุปจุดที่รถติดหนักที่สุดตอนนี้" class="chat-chip">🚨 สรุปจุดติดขัด</button>
+      <button data-quick-prompt="แนะนำปรับสัญญาณไฟจราจร" class="chat-chip">🚦 แนะนำปล่อยไฟ</button>
+      <button data-quick-prompt="ถนนพระราม 4 ตอนนี้ติดไหม" class="chat-chip">🚗 ถ.พระราม 4</button>
+      <button data-quick-prompt="สถิติยานพาหนะและภาพรวม" class="chat-chip">📊 สถิติภาพรวม</button>
+    </div>
+
+    <!-- Chat Input Form -->
+    <form id="chat-form" class="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/90 flex items-center gap-2">
+      <input id="chat-input" type="text" autocomplete="off" placeholder="พิมพ์ถามสภาพจราจร, ชื่อถนน เช่น พระราม 4..." class="flex-1 px-3.5 py-2 rounded-xl text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 text-slate-900 dark:text-white placeholder:text-slate-400" />
+      <button type="submit" id="chat-btn-send" class="w-8 h-8 rounded-xl bg-gradient-to-r from-rose-500 via-purple-600 to-indigo-600 text-white flex items-center justify-center hover:opacity-90 active:scale-95 transition-all shadow-md shadow-purple-500/20 cursor-pointer disabled:opacity-50">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+      </button>
+    </form>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.12"></script>
