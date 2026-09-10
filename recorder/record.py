@@ -44,16 +44,21 @@ from detect import (MOTORCYCLE_CONF, VEHICLES, FlowTracker,  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
-# How long a clip runs. Six seconds is enough to see whether traffic is moving,
-# and is what sets the round length: the boxing afterwards costs 70ms a frame.
-CLIP_SECONDS = 6
-# Written at this rate whatever the camera sends. Some of these run at 60fps,
-# which for watching a queue move is four times the file for nothing a viewer
-# can see: one measured 87 MB for six seconds at 1920x1080. Resolution is left
-# alone - that is what makes a clip worth looking at - and only the surplus
-# frames go. Across every camera it took the mean from 19.1 MB to what the
-# storage figures below assume.
-CLIP_FPS = 15
+# Fifteen frames a second was visibly stepped - traffic moved in jumps - so
+# the clip is shorter and smoother instead: four seconds at 25 is 100 frames
+# against six at 15's 90. The boxing afterwards costs 70ms a frame either way,
+# so the round barely moved.
+#
+# The file did, by more than the frame count: 6.2 MB became 9.2 MB, 1.48x for
+# 11-33% more frames, because the encoder spends roughly the same on a frame
+# whether or not its neighbour is close in time. A day at five minute rounds
+# is 70 GB rather than 52, which the drive still holds at 227 GB free.
+CLIP_SECONDS = 4
+# Written at this rate whatever the camera sends. Some run at 60, which for
+# watching a queue move is four times the file for nothing a viewer can see:
+# one measured 87 MB for six seconds at 1920x1080. Resolution is left alone -
+# that is what makes a clip worth looking at - and only the surplus goes.
+CLIP_FPS = 25
 
 
 def human(n):
