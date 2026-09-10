@@ -44,7 +44,8 @@ from detect import (MOTORCYCLE_CONF, VEHICLES, FlowTracker,  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
-# How long a clip runs. Six seconds is enough to see whether traffic is moving.
+# How long a clip runs. Six seconds is enough to see whether traffic is moving,
+# and is what sets the round length: the boxing afterwards costs 70ms a frame.
 CLIP_SECONDS = 6
 # Written at this rate whatever the camera sends. Some of these run at 60fps,
 # which for watching a queue move is four times the file for nothing a viewer
@@ -235,10 +236,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.environ.get("CCTV_DIR", "D:/CCTV"))
     ap.add_argument("--site", default="http://127.0.0.1:3000")
-    ap.add_argument("--interval", type=int, default=600,
-                    help="seconds between rounds; a round of every camera takes 108-131s")
+    # A round measured 290-342s once the clips are boxed, so at five minutes it
+    # runs nearly back to back and the real cadence lands between five and six
+    # minutes. The loop starts the next round as soon as one overruns, so this
+    # costs no correctness - only a GPU that is busy most of the time, which
+    # the live view shares. Drop CLIP_SECONDS if a strict five is worth more
+    # than the length of the clips.
+    ap.add_argument("--interval", type=int, default=300,
+                    help="seconds between rounds; a round takes 290-342s")
     ap.add_argument("--keep-days", type=int, default=1,
-                    help="clips are 9 MB each, so a day of them is already 38 GB")
+                    help="6.5 MB a clip, so a day at five minute rounds is 52 GB")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--weights", default="detector/weights/yolo11x.pt")
     ap.add_argument("--conf", type=float, default=0.15)
