@@ -894,7 +894,7 @@ function closeDetail() {
   const video = el('detail-video');
   const hls = state.players.get('detail');
   if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
-  if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
+  if (video) { video.onended = null; try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
 
   state.detail = null;
   el('detail').classList.add('hidden');
@@ -910,6 +910,10 @@ function setDetailMode(mode) {
     (mode === 'det' ? 'bg-rose-600 text-white' : idle);
   el('detail-tab-live').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
     (mode === 'live' ? 'bg-rose-600 text-white' : idle);
+  if (el('detail-tab-rec')) {
+    el('detail-tab-rec').className = 'px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ' +
+      (mode === 'rec' ? 'bg-rose-600 text-white' : idle);
+  }
   renderDetail();
 }
 
@@ -925,12 +929,13 @@ function renderDetail(imageOnly = false) {
   if (state.detailMode === 'det') {
     img.classList.remove('hidden');
     video.classList.add('hidden');
+    video.onended = null;
     const ov = el('detail-overlay');
     if (ov) ov.innerHTML = '';
 
     const hls = state.players.get('detail');
     if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
-    if (!imageOnly) { try { video.pause(); } catch (e) {} }
+    if (!imageOnly) { try { video.pause(); video.removeAttribute('src'); } catch (e) {} }
 
     if (reading && reading.total !== null) {
       img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
@@ -941,9 +946,44 @@ function renderDetail(imageOnly = false) {
         ? 'ตรวจจับไม่สำเร็จ: ' + reading.error
         : 'ยังไม่มีผลตรวจจับ — ตัวตรวจจับอาจไม่ได้เปิดอยู่';
     }
-  } else {
+  } else if (state.detailMode === 'rec') {
     img.classList.add('hidden');
     video.classList.remove('hidden');
+    const ov = el('detail-overlay');
+    if (ov) ov.innerHTML = '';
+
+    const hls = state.players.get('detail');
+    if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
+
+    const rec = state.recordings.get(cam.id);
+    const clips = (rec && rec.clips) || [];
+    if (!clips.length) {
+      msg.textContent = 'ยังไม่มีคลิป 10 นาทีที่บันทึกไว้ใน Drive D';
+      video.removeAttribute('src');
+    } else {
+      msg.textContent = '';
+      const latestClip = clips[clips.length - 1];
+      const targetSrc = `/api/recording/${encodeURIComponent(cam.id)}/${latestClip}`;
+      if (!video.src.includes(targetSrc)) {
+        video.src = targetSrc;
+        video.play().catch(() => {});
+      }
+      video.onended = async () => {
+        await loadRecordings(true);
+        const freshRec = state.recordings.get(cam.id);
+        const freshClips = (freshRec && freshRec.clips) || [];
+        if (freshClips.length) {
+          const freshLatest = freshClips[freshClips.length - 1];
+          video.src = `/api/recording/${encodeURIComponent(cam.id)}/${freshLatest}`;
+          video.play().catch(() => {});
+        }
+      };
+    }
+  } else {
+    // live mode
+    img.classList.add('hidden');
+    video.classList.remove('hidden');
+    video.onended = null;
     msg.textContent = '';
     attachDetailPlayer(cam, video, msg);
     video.addEventListener('loadedmetadata', () => drawBoxes(cam.id, el('detail-overlay'), video), { once: true });
@@ -1752,6 +1792,7 @@ document.addEventListener('DOMContentLoaded', () => {
   el('detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
   el('detail-tab-det').addEventListener('click', () => setDetailMode('det'));
   el('detail-tab-live').addEventListener('click', () => setDetailMode('live'));
+  if (el('detail-tab-rec')) el('detail-tab-rec').addEventListener('click', () => setDetailMode('rec'));
   const detailPip = el('detail-pip-btn');
   if (detailPip) detailPip.addEventListener('click', () => togglePiP(el('detail-video')));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.detail) closeDetail(); });
