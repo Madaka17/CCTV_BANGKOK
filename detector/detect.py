@@ -780,15 +780,22 @@ def main():
     # 0-3% between sweeps - so the larger model buys accuracy for free here.
     ap.add_argument("--weights", default="yolo11x.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
-    ap.add_argument("--focus-workers", type=int, default=2,
-                    help="cameras that can be tracked at once; each is a stream and "
-                         "a share of the CPU, so keep it small")
-    # 2.0 was the rate that fit while a sweep of every camera ran alongside.
-    # With sweeps off the same machine measured 10.5 fps on one camera, so the
-    # ceiling is the model, not contention. 8 keeps a margin: two people can
-    # watch two cameras at once, and the tracker just slows rather than breaks
-    # if the GPU cannot keep up.
-    ap.add_argument("--focus-fps", type=float, default=8.0,
+    # Two meant the third person to open a camera got nothing at all - not a
+    # slower picture, nothing - while the two being served drifted six times
+    # apart from each other. Six shares out evenly: measured 1.52, 1.80 and 1.33
+    # fps across three viewers where two workers gave 5.55, 0.89 and zero.
+    #
+    # It costs nothing to raise, because the card is not what runs out. Through
+    # all of this the GPU sat at 4-24% and only touched 100% while the recorder
+    # was boxing its clips. What limits a viewer is the stream: HLS arrives a
+    # segment at a time and these cameras drop connections at random.
+    ap.add_argument("--focus-workers", type=int, default=6,
+                    help="cameras that can be tracked at once")
+    # A ceiling rather than a target: one camera on its own reached 10.5 fps,
+    # and holding that back at 8 was leaving frames on the table for no reason
+    # the measurements support. The streams themselves rarely offer more than
+    # this, so in practice it only stops a single viewer monopolising the card.
+    ap.add_argument("--focus-fps", type=float, default=15.0,
                     help="frames a second to pull for the camera being watched")
     args = ap.parse_args()
 
