@@ -251,10 +251,11 @@ function setEmptyMessage(text) {
 
 // --- Recordings ------------------------------------------------------------
 //
-// recorder/record.py samples every camera and runs the model as it goes, so
-// the frames on disk already have their boxes drawn in. A finished day is one
-// video; the day in progress is still frames, and the newest of those is the
-// closest thing to now that exists - up to a round old, so about 90 seconds.
+// recorder/record.py takes a few seconds of video off every camera each round.
+// A card plays the newest of those clips, so what a viewer sees is traffic
+// actually moving, at most a round old. A frame every ten minutes was the
+// first attempt and could not be read as traffic at all - the road simply
+// looked different each time.
 
 async function loadRecordings() {
   try {
@@ -274,30 +275,53 @@ function paintRecording(cam) {
   const rec = state.recordings.get(cam.id);
 
   if (!rec) {
-    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีภาพที่บันทึกไว้</div>';
+    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีคลิปที่บันทึกไว้</div>';
     return;
   }
 
-  const url = encodeURIComponent(cam.id);
-  const day = rec.days.find(d => d.video);
-  if (day) {
-    // A whole day at ten frames a second: about a minute and a half of video
-    // for twenty-four hours of road.
-    slot.innerHTML = `<video class="absolute inset-0 w-full h-full object-contain"
-      src="/api/recording/${url}/${day.day}.mp4" autoplay loop muted playsinline></video>
-      <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded">${day.day}</span>`;
+  const clips = rec.clips || [];
+  if (!clips.length) {
+    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีคลิปที่บันทึกไว้</div>';
     return;
   }
 
-  if (rec.latest) {
-    // Cache-busted on the round, so a card that is left open keeps up
-    slot.innerHTML = `<img class="absolute inset-0 w-full h-full object-contain"
-      src="/api/recording/${url}/${rec.latest}.jpg" alt="" />
-      <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded">${rec.latest.slice(11).replace(/-/g, ':')}</span>`;
+  // Keep playing where this card already was. Repainting happens every time
+  // the list is refetched, and starting the day over each time would mean a
+  // card never got past its first clip.
+  const playing = slot.querySelector('video');
+  const at = playing && playing.dataset.clip;
+  let index = at ? clips.indexOf(at) : -1;
+  if (index === -1) index = clips.length - 1;   // a new card opens on the newest
+  if (playing && clips[index] === at) {
+    playing.dataset.clips = clips.join(' ');
     return;
   }
 
-  slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีภาพที่บันทึกไว้</div>';
+  slot.innerHTML = `<video class="absolute inset-0 w-full h-full object-contain"
+    muted playsinline autoplay></video>
+    <span class="absolute top-2.5 left-2.5 px-2 py-0.5 text-[10px] font-bold bg-slate-900/80 text-white rounded"></span>`;
+  const video = slot.querySelector('video');
+  const badge = slot.querySelector('span');
+  video.dataset.clips = clips.join(' ');
+
+  const show = (i) => {
+    const list = video.dataset.clips.split(' ');
+    const clip = list[Math.min(i, list.length - 1)];
+    video.dataset.clip = clip;
+    video.src = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
+    badge.textContent = clip.slice(11, 19).replace(/-/g, ':');
+    video.play().catch(() => { /* a card off screen may refuse to start */ });
+  };
+
+  // One clip is six seconds of a ten minute gap, so playing straight on into
+  // the next is the only way a card shows more than a moment of the day.
+  video.addEventListener('ended', () => {
+    const list = video.dataset.clips.split(' ');
+    const next = list.indexOf(video.dataset.clip) + 1;
+    show(next < list.length ? next : 0);
+  });
+
+  show(index);
 }
 
 function showRecorderNotice(off) {
@@ -307,7 +331,7 @@ function showRecorderNotice(off) {
   bar = document.createElement('div');
   bar.id = 'recorder-notice';
   bar.className = 'detector-notice';
-  bar.textContent = 'ตัวบันทึกไม่ได้ทำงาน การ์ดจึงยังไม่มีภาพ — เปิดด้วย npm run record';
+  bar.textContent = 'ตัวบันทึกไม่ได้ทำงาน การ์ดจึงยังไม่มีคลิป — เปิดด้วย npm run record';
   document.body.insertBefore(bar, document.body.firstChild);
 }
 

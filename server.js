@@ -870,25 +870,32 @@ function listRecordings() {
   for (const entry of cameras) {
     if (!entry.isDirectory() || !SAFE_SEGMENT.test(entry.name)) continue;
     const dir = path.join(RECORDINGS_DIR, entry.name);
-    // The day in progress has both: a folder of frames and a video rebuilt
-    // from them each round. One entry per day, so it is not listed twice.
+    // A day is a folder of clips, one per round, named for the moment the
+    // camera was read. The page plays them in order and moves to the next when
+    // one ends, so it needs the list, not just the newest.
     const byDay = new Map();
-    let latest = null;
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (item.isFile() && item.name.endsWith('.mp4')) {
-        const day = item.name.slice(0, -4);
-        byDay.set(day, { ...(byDay.get(day) || { day }), video: true });
-      } else if (item.isDirectory()) {
-        const shots = fs.readdirSync(path.join(dir, item.name)).filter(f => f.endsWith('.jpg'));
-        if (!shots.length) continue;
-        const day = item.name;
-        byDay.set(day, { ...(byDay.get(day) || { day, video: false }), frames: shots.length });
-        const newest = shots.sort()[shots.length - 1];
-        latest = `${day}/${newest.slice(0, -4)}`;
-      }
+      if (!item.isDirectory() || item.name.length !== 10) continue;
+      const clips = fs.readdirSync(path.join(dir, item.name))
+        .filter(f => f.endsWith('.mp4') && !f.includes('.writing.'))
+        .sort();
+      if (clips.length) byDay.set(item.name, clips);
     }
-    const days = [...byDay.values()].sort((a, b) => a.day < b.day ? 1 : -1);
-    if (days.length) out.push({ id: entry.name, days, latest });
+    if (!byDay.size) continue;
+
+    const dayNames = [...byDay.keys()].sort();
+    const newest = dayNames[dayNames.length - 1];
+    // Only the newest day's list travels. A day is at most 144 clips a camera,
+    // and every viewer asks for this every thirty seconds.
+    const clips = byDay.get(newest).map(f => `${newest}/${f}`);
+    out.push({
+      id: entry.name,
+      day: newest,
+      clips,
+      latest: clips[clips.length - 1],
+      days: dayNames.map(d => ({ day: d, clips: byDay.get(d).length }))
+        .sort((a, b) => a.day < b.day ? 1 : -1)
+    });
   }
   const data = { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
   recordingsCache = { at: Date.now(), data };

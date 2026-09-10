@@ -2,8 +2,8 @@
 """Camera recorder.
 
 The site shows what a camera sees now. This keeps what it saw: a frame from
-every camera on an interval, stitched into a video a day at a time, and thrown
-away after a few days.
+a few seconds of video from every camera on an interval, and thrown away after
+a day.
 
 The interval has a floor and it is not small. Each frame costs a fresh HLS
 connection - playlist, first segment, then the frame - and a round of every
@@ -28,7 +28,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 import urllib.request
@@ -39,15 +38,21 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "detector"))
-from detect import MOTORCYCLE_CONF, detect, grab_frame, predict  # noqa: E402
+from detect import (MOTORCYCLE_CONF, VEHICLES, FlowTracker,  # noqa: E402
+                    drain_to_live, draw_tracks, open_stream, predict,
+                    vehicle_boxes)
 from ultralytics import YOLO  # noqa: E402
 
 
-# How many frames to spend fading from one sample into the next. Four at ten a
-# second is a bit under half a second of change per gap, which is enough for
-# the eye to follow the traffic moving rather than see it teleport. It costs
-# file size in proportion: a day goes from 144 frames to 144 x 5.
-BLEND_FRAMES = 4
+# How long a clip runs. Six seconds is enough to see whether traffic is moving.
+CLIP_SECONDS = 6
+# Written at this rate whatever the camera sends. Some of these run at 60fps,
+# which for watching a queue move is four times the file for nothing a viewer
+# can see: one measured 87 MB for six seconds at 1920x1080. Resolution is left
+# alone - that is what makes a clip worth looking at - and only the surplus
+# frames go. Across every camera it took the mean from 19.1 MB to what the
+# storage figures below assume.
+CLIP_FPS = 15
 
 
 def human(n):
@@ -61,35 +66,130 @@ def cameras(site):
 
 
 def capture(cam, out_dir, day, model, conf, imgsz):
-    """One frame, with what was on the road drawn onto it.
+    """A few seconds of real video from one camera, and what was on it.
 
-    The boxes are burnt into the stored frame rather than kept beside it. The
-    stitched day is then watchable as it is, with no second file to keep in
-    step and nothing for the page to draw - and a frame this far apart from its
-    neighbours is only ever going to be looked at, not re-processed.
+    A frame every ten minutes could not be read as traffic - the road simply
+    looked different each time, and no amount of cross-fading between two
+    unrelated moments makes that a picture of anything. Seconds of actual
+    motion tell someone what a junction is like at a glance.
+
+    The boxes do not go on it. Drawing them would mean running the model over
+    every frame of every clip - 90 frames times 29 cameras a round, against the
+    29 passes this does - so one frame out of the clip is measured for the
+    count and the video itself is left as it came off the camera.
     """
-    try:
-        frame = grab_frame(cam["hls"])
-    except Exception as exc:
-        return cam["id"], str(exc)[:60], None
+    cap = open_stream(cam["hls"])
+    if cap is None:
+        return cam["id"], "could not open stream", None
 
     try:
-        counts, total, annotated, _ = detect(model, frame, conf, imgsz)
-    except Exception as exc:
-        return cam["id"], f"detect: {str(exc)[:50]}", None
+        drain_to_live(cap)
+        native = cap.get(cv2.CAP_PROP_FPS)
+        native = native if 1 < native <= 120 else 25
+        step = max(1, round(native / CLIP_FPS))
+        fps = native / step
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if not width or not height:
+            return cam["id"], "no frame size", None
 
-    # Named for when this camera was actually read, not for when the round
-    # began. Eight threads work through 29 cameras over a couple of minutes, so
-    # one shared stamp told every frame in a round it was taken at the same
-    # moment - and the order they were really taken in was lost with it. That
-    # is what made the playback jump backwards.
-    stamp = datetime.now(timezone.utc).strftime("%H-%M-%S")
-    folder = os.path.join(out_dir, cam["id"], day)
-    os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(folder, f"{stamp}.jpg"), "wb") as fh:
-        fh.write(annotated if annotated else b"")
+        stamp = datetime.now(timezone.utc).strftime("%H-%M-%S")
+        folder = os.path.join(out_dir, cam["id"], day)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{stamp}.mp4")
+        partial = os.path.join(folder, f"{stamp}.writing.mp4")
+        raw = os.path.join(folder, f"{stamp}.raw.mp4")
+
+        writer = cv2.VideoWriter(raw, cv2.VideoWriter_fourcc(*"avc1"),
+                                 fps, (width, height))
+        if not writer.isOpened():
+            if os.path.exists(raw):
+                os.remove(raw)
+            return cam["id"], "no encoder", None
+
+        # Read at whatever the camera sends and keep one in every step, so the
+        # clip covers CLIP_SECONDS of real time however fast the source runs.
+        wanted = int(CLIP_SECONDS * native)
+        written = 0
+        try:
+            for i in range(wanted):
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                if i % step:
+                    continue
+                writer.write(frame)
+                written += 1
+        finally:
+            writer.release()
+    finally:
+        cap.release()
+
+    # A stream that hands over a frame or two and stops is not a clip
+    if written < CLIP_FPS:
+        if os.path.exists(raw):
+            os.remove(raw)
+        return cam["id"], f"only {written} frames", None
+
+    try:
+        counts, total = annotate(raw, partial, fps, (width, height), model, conf, imgsz)
+    except Exception as exc:
+        for leftover in (raw, partial):
+            if os.path.exists(leftover):
+                os.remove(leftover)
+        return cam["id"], f"annotate: {str(exc)[:50]}", None
+    os.replace(partial, path)
+    os.remove(raw)
     return cam["id"], None, {"at": stamp, "total": total, "counts": counts}
 
+
+def annotate(source, target, fps, size, model, conf, imgsz):
+    """The same clip with the vehicles boxed, and what it counted.
+
+    Reading the clip back rather than boxing it as it arrives, because the
+    tracker cannot keep up with a live stream and eight of them at once: it
+    costs 70ms a frame, and a six second clip at fifteen frames is 5.3s of
+    work. Off the stream clock that is fine - 29 cameras come to 154s of a
+    600s round - but on it the read would fall behind and the clip would tear.
+
+    The tracker runs the model on every third frame and carries the boxes
+    between on optical flow, which is what makes 90 frames cost 25 passes
+    rather than 90.
+    """
+    def run_yolo(frame):
+        result = predict(model, frame, conf, imgsz)
+        out = []
+        for cls, box in vehicle_boxes(result, conf):
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            out.append({"bbox": [x1, y1, x2, y2], "name": VEHICLES[cls][0],
+                        "conf": float(box.conf[0])})
+        return out
+
+    cap = cv2.VideoCapture(source)
+    writer = cv2.VideoWriter(target, cv2.VideoWriter_fourcc(*"avc1"), fps, size)
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError("no encoder for the annotated clip")
+
+    tracker = FlowTracker()
+    tracker.reset()
+    counts, total = {}, 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            tracks, _ = tracker.update(frame, run_yolo)
+            writer.write(draw_tracks(frame, tracks))
+            # The last frame's tracks are the count for the clip
+            counts = {}
+            for t in tracks.values():
+                counts[t["name"]] = counts.get(t["name"], 0) + 1
+            total = len(tracks)
+    finally:
+        writer.release()
+        cap.release()
+    return counts, total
 
 def log_counts(out_dir, cam_id, day, reading):
     """One line per frame, so the day is a table as well as a video."""
@@ -108,122 +208,8 @@ def log_counts(out_dir, cam_id, day, reading):
         print(row, file=fh)
 
 
-def stitch(cam_dir, day, fps, drop_frames):
-    """The day's frames as one video.
-
-    Rebuilt every round rather than only when the day is over, so a card shows
-    moving traffic from the first few frames on instead of a still picture
-    until midnight. Re-encoding the day so far costs a read of each frame, and
-    a day tops out at 144 of them.
-
-    The video is written beside the real name and moved into place, because the
-    web server may be streaming the old one to somebody while this runs. The
-    temporary name still has to end in .mp4: OpenCV picks the container from
-    the extension, and a ".part" suffix leaves the writer unable to open at all.
-
-    H.264, because no browser plays anything else here. mp4v was the first
-    choice and it was wrong: OpenCV reads it back happily, which is how it got
-    through review, but MPEG-4 Part 2 is not a codec a browser will play in a
-    video element - the cards were being handed a file they could only show as
-    black. It needs openh264-2.5.0-win64.dll beside cv2; see the README.
-
-    It is a third of the size as well. Twenty frames measured 1.08 MB as H.264
-    against 3.54 MB as mp4v, and mp4v was already 18% of what the same frames
-    cost kept as separate JPEGs.
-    """
-    folder = os.path.join(cam_dir, day)
-    shots = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
-    if not shots:
-        if drop_frames:
-            shutil.rmtree(folder, ignore_errors=True)
-        return None
-
-    first = cv2.imread(os.path.join(folder, shots[0]))
-    if first is None:
-        return None
-    height, width = first.shape[:2]
-    path = os.path.join(cam_dir, f"{day}.mp4")
-    partial = os.path.join(cam_dir, f"{day}.writing.mp4")
-    writer = cv2.VideoWriter(partial, cv2.VideoWriter_fourcc(*"avc1"), fps, (width, height))
-    if not writer.isOpened():
-        # It may still have created the file before giving up
-        if os.path.exists(partial):
-            os.remove(partial)
-        return None
-
-    written = 0
-    previous = None
-    for name in shots:
-        frame = cv2.imread(os.path.join(folder, name))
-        if frame is None:
-            continue
-        if frame.shape[:2] != (height, width):
-            frame = cv2.resize(frame, (width, height))
-
-        # Ten minutes between frames is a hard cut every time - the traffic is
-        # simply somewhere else - and a run of hard cuts is what reads as the
-        # picture jumping about. Fading from one into the next spends a few
-        # frames on the change instead of none, which is all a timelapse can
-        # do about a gap it cannot fill.
-        if previous is not None:
-            for step in range(1, BLEND_FRAMES + 1):
-                a = step / (BLEND_FRAMES + 1)
-                writer.write(cv2.addWeighted(previous, 1 - a, frame, a, 0))
-                written += 1
-
-        writer.write(frame)
-        written += 1
-        previous = frame
-    writer.release()
-
-    if not written:
-        if os.path.exists(partial):
-            os.remove(partial)
-        return None
-
-    # Windows will not let the finished file take the place of one another
-    # process has open, and the page loops these videos, so the server has the
-    # old one open a good part of the time. Wait for a gap; if there is not one,
-    # keep the video that is already there and try again next round.
-    for attempt in range(6):
-        try:
-            os.replace(partial, path)
-            break
-        except PermissionError:
-            if attempt == 5:
-                os.remove(partial)
-                return None
-            time.sleep(0.5)
-
-    if drop_frames:
-        shutil.rmtree(folder, ignore_errors=True)
-    return path, written, os.path.getsize(path)
-
-
-def restitch(out_dir, today, fps):
-    """Rebuild every day's video.
-
-    Today's is rebuilt in place and keeps its frames, since more are coming. A
-    day that is over is rebuilt one last time and gives its frames up.
-    """
-    made = []
-    for cam_id in sorted(os.listdir(out_dir)):
-        cam_dir = os.path.join(out_dir, cam_id)
-        if not os.path.isdir(cam_dir):
-            continue
-        for day in sorted(os.listdir(cam_dir)):
-            day_dir = os.path.join(cam_dir, day)
-            if not os.path.isdir(day_dir):
-                continue
-            finished = day < today
-            result = stitch(cam_dir, day, fps, drop_frames=finished)
-            if result and finished:
-                made.append((cam_id, day, result[1], result[2]))
-    return made
-
-
 def prune(out_dir, keep_days, today):
-    """Anything older than the window, whether it was stitched or not."""
+    """Anything older than the window."""
     cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=keep_days)).strftime("%Y-%m-%d")
     freed = 0
     for cam_id in sorted(os.listdir(out_dir)):
@@ -251,24 +237,14 @@ def main():
     ap.add_argument("--site", default="http://127.0.0.1:3000")
     ap.add_argument("--interval", type=int, default=600,
                     help="seconds between rounds; a round of every camera takes 108-131s")
-    ap.add_argument("--keep-days", type=int, default=5)
+    ap.add_argument("--keep-days", type=int, default=1,
+                    help="clips are 9 MB each, so a day of them is already 38 GB")
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--video-fps", type=int, default=10,
-                    help="playback rate of the stitched day; at ten minute samples "
-                         "a whole day comes to about fifteen seconds")
     ap.add_argument("--weights", default="detector/weights/yolo11x.pt")
     ap.add_argument("--conf", type=float, default=0.15)
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--once", action="store_true", help="one round, then stop")
-    ap.add_argument("--stitch-only", action="store_true",
-                    help="rebuild the videos and exit; how the loop runs the stitch")
     args = ap.parse_args()
-
-    if args.stitch_only:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        for cam_id, d, frames, size in restitch(args.out, today, args.video_fps):
-            print(f"  closed {cam_id}/{d}: {frames} frames -> {human(size)}")
-        return
 
     os.makedirs(args.out, exist_ok=True)
     print(f"Loading {args.weights} ...", flush=True)
@@ -312,26 +288,9 @@ def main():
                 log_counts(args.out, cam_id, day, reading)
                 vehicles += reading["total"]
 
-        # Prune first: a day past the window is about to go, and stitching it
-        # would be work done only to delete the result.
         freed = prune(args.out, args.keep_days, day)
         if freed:
             print(f"  pruned {human(freed)} past {args.keep_days} days", flush=True)
-
-        # Rebuilding the videos in this process cost it about 600 MB a round
-        # that it never gave back - it reached 15 GB and was killed. The work
-        # is reading every frame of the day back through OpenCV, and whatever
-        # holds on to that is not worth chasing when a child process hands it
-        # all back on exit. This is the same file, run for the stitch alone.
-        child = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--stitch-only",
-             "--out", args.out, "--video-fps", str(args.video_fps)],
-            capture_output=True, text=True, timeout=600)
-        for line in child.stdout.splitlines():
-            print(line, flush=True)
-        if child.returncode:
-            print(f"  stitch failed ({child.returncode}): "
-                  f"{child.stderr.strip()[-200:]}", flush=True)
 
         print(f"[{now.strftime('%H:%M:%S')}] {len(saved)}/{len(found)} cameras, "
               f"{vehicles} vehicles, {time.time() - started:.0f}s", flush=True)
