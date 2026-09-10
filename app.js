@@ -25,7 +25,11 @@ const state = {
   focusTimer: null,
   focusFps: 0,
   map: null,
-  markers: []
+  markers: [],
+  watchlist: new Set(JSON.parse(localStorage.getItem('bkk_cctv_watchlist') || '[]')),
+  trafficFilter: 'all', // 'all' | 'watchlist' | 'jam' | 'slow' | 'flowing'
+  cameraTraffic: new Map(), // camera id -> { roadName, level, score, label, action }
+  gridCols: Number(localStorage.getItem('bkk_cctv_grid_cols') || 3)
 };
 
 // Longdo publishes live traffic as vector tiles, open and CORS-enabled, so the
@@ -77,7 +81,6 @@ function fillOrgFilter() {
 // --- Rendering -------------------------------------------------------------
 
 function render() {
-
   const grid = el('camera-grid');
 
   if (!state.cameras.length) {
@@ -87,40 +90,71 @@ function render() {
     return;
   }
 
-  grid.innerHTML = state.cameras.map(cam => `
+  grid.innerHTML = state.cameras.map(cam => {
+    const isStarred = state.watchlist.has(cam.id);
+    return `
     <div data-cam-id="${escapeHtml(cam.id)}"
          data-search="${escapeHtml(((cam.title || '') + ' ' + (cam.org || '') + ' ' + cam.id).toLowerCase())}"
          data-org="${escapeHtml(cam.org || '')}"
-         class="camera-card rounded-2xl overflow-hidden flex flex-col">
+         class="camera-card rounded-2xl overflow-hidden flex flex-col group relative">
       <div class="relative bg-black aspect-video flex items-center justify-center">
-        <!-- Absolute, like the overlays below it: as a flow child a tall frame
-             stretches past the 16:9 box and the grid row goes ragged. -->
-        <!-- What the recorder kept, not a live stream. The boxes are already
-             drawn into these frames, so there is nothing to overlay here. -->
         <div id="rec-${cssId(cam.id)}" class="absolute inset-0"></div>
 
-        <button data-fullscreen="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
-                class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-lg cursor-pointer"
-                title="เต็มจอ">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
-        </button>
+        <!-- Top Left: LIVE indicator tag -->
+        <div class="absolute top-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/65 backdrop-blur-md border border-white/10 text-[10px] font-bold text-white tracking-wider">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>LIVE</span>
+        </div>
+
+        <!-- Top Right Actions: Traffic Tag, Star, PiP, Fullscreen -->
+        <div class="absolute top-2.5 right-2.5 z-10 flex items-center gap-1.5">
+          <div id="tb-${cssId(cam.id)}"></div>
+          <button data-star="${escapeHtml(cam.id)}"
+                  class="card-action-btn ${isStarred ? 'is-starred' : ''}"
+                  title="${isStarred ? 'ลบออกจาก Watchlist' : 'ปักหมุดลง Watchlist (ดูบ่อย)'}">
+            <svg class="w-3.5 h-3.5 ${isStarred ? 'text-amber-400' : 'text-white'}" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20">
+              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+            </svg>
+          </button>
+          <button data-pip="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
+                  class="card-action-btn"
+                  title="Picture-in-Picture (ดูจอเล็ก)">
+            <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 11h-6a1 1 0 00-1 1v4a1 1 0 001 1h6a1 1 0 001-1v-4a1 1 0 00-1-1z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+            </svg>
+          </button>
+          <button data-fullscreen="${cssId(cam.id)}" data-cam="${escapeHtml(cam.id)}"
+                  class="card-action-btn"
+                  title="เต็มจอ">
+            <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/>
+            </svg>
+          </button>
+        </div>
 
         <div id="o-${cssId(cam.id)}" class="absolute inset-0 pointer-events-none"></div>
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
-      <div class="p-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors" data-detail="${escapeHtml(cam.id)}">
-        <h2 class="text-sm font-semibold leading-snug">${escapeHtml(cam.title)}</h2>
-        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">${escapeHtml(cam.org)}</p>
-        <p id="c-${cssId(cam.id)}" class="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium"></p>
-        <span class="inline-flex items-center gap-1 mt-2 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
-          รายละเอียด
-          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-        </span>
+      <div class="p-3.5 cursor-pointer hover:bg-slate-100/80 dark:hover:bg-slate-800/50 transition-colors flex-1 flex flex-col justify-between" data-detail="${escapeHtml(cam.id)}">
+        <div>
+          <h2 class="text-sm font-semibold leading-snug text-slate-900 dark:text-slate-100">${escapeHtml(cam.title)}</h2>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1.5">
+            <svg class="w-3 h-3 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="truncate">${escapeHtml(cam.org)}</span>
+          </p>
+        </div>
+        <div class="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between text-[11px]">
+          <span id="c-${cssId(cam.id)}" class="text-emerald-600 dark:text-emerald-400 font-medium truncate"></span>
+          <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400 ml-auto shrink-0">
+            รายละเอียด AI
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </span>
+        </div>
       </div>
     </div>
-  `).join('');
-
+  `; }).join('');
 
   grid.querySelectorAll('[data-detail]').forEach(node => {
     node.addEventListener('click', () => {
@@ -129,17 +163,36 @@ function render() {
     });
   });
 
-  applyFilter();
-  paintCardCounts();
-  state.cameras.forEach(paintRecording);
+  grid.querySelectorAll('[data-star]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleWatchlist(btn.dataset.star);
+    });
+  });
+
+  grid.querySelectorAll('[data-pip]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const slot = el('rec-' + btn.dataset.pip);
+      const video = slot ? slot.querySelector('video') : null;
+      if (video) togglePiP(video);
+    });
+  });
 
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const slot = el('rec-' + btn.dataset.fullscreen);
       if (!slot) return;
       if (slot.requestFullscreen) slot.requestFullscreen();
     });
   });
+
+  applyFilter();
+  paintCardCounts();
+  paintTrafficBadges();
+  updateWatchlistBadges();
+  state.cameras.forEach(paintRecording);
 }
 
 // Camera ids contain characters that are awkward in selectors
@@ -210,52 +263,238 @@ function attachPlayer(cam, prefix = 'v-') {
   state.players.set(key, hls);
 }
 
-// --- Search and filter -----------------------------------------------------
+// --- Search, Watchlist, PiP and Filters ------------------------------------
 
-// Filtering hides cards instead of re-rendering the grid: a re-render tears
-// down every player, so a stream would die on each keystroke. The visibility
-// observer already stops a camera once its card is display:none, so hiding
-// also releases the connection for free.
+async function togglePiP(video) {
+  if (!video) return;
+  try {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else if (document.pictureInPictureEnabled) {
+      await video.requestPictureInPicture();
+    }
+  } catch (e) {
+    console.warn('PiP not available or refused:', e);
+  }
+}
+
+function toggleWatchlist(camId) {
+  if (state.watchlist.has(camId)) {
+    state.watchlist.delete(camId);
+  } else {
+    state.watchlist.add(camId);
+  }
+  localStorage.setItem('bkk_cctv_watchlist', JSON.stringify([...state.watchlist]));
+  updateWatchlistBadges();
+  updateStarButtons(camId);
+  if (state.trafficFilter === 'watchlist') {
+    applyFilter();
+  }
+}
+
+function updateWatchlistBadges() {
+  const count = state.watchlist.size;
+  const b = el('badge-watchlist-count');
+  if (b) b.textContent = count;
+  const pill = document.querySelector('.filter-pill.pill-watchlist span:last-child');
+  if (pill) pill.textContent = count ? `Watchlist (${count})` : 'Watchlist';
+}
+
+function updateStarButtons(targetId = null) {
+  const selector = targetId ? `[data-star="${cssId(targetId)}"], [data-star="${targetId}"]` : '[data-star]';
+  document.querySelectorAll(selector).forEach(btn => {
+    const id = btn.dataset.star;
+    const starred = state.watchlist.has(id);
+    btn.classList.toggle('is-starred', starred);
+    btn.title = starred ? 'ลบออกจาก Watchlist' : 'ปักหมุดลง Watchlist';
+    const svg = btn.querySelector('svg');
+    if (svg) {
+      svg.setAttribute('fill', starred ? 'currentColor' : 'none');
+      svg.setAttribute('class', `w-3.5 h-3.5 ${starred ? 'text-amber-400' : 'text-white'}`);
+    }
+  });
+}
+
+function setWatchlistPresets() {
+  const targets = ['อโศก', 'พระราม 4', 'ลาดพร้าว', 'สาทร', 'อนุสาวรีย์', 'ราชประสงค์', 'สุขุมวิท'];
+  const picked = [];
+  for (const t of targets) {
+    const match = state.cameras.find(c => c.title.includes(t) && !picked.includes(c.id));
+    if (match) picked.push(match.id);
+    if (picked.length >= 4) break;
+  }
+  if (picked.length < 4) {
+    state.cameras.slice(0, 4).forEach(c => {
+      if (!picked.includes(c.id)) picked.push(c.id);
+    });
+  }
+  picked.forEach(id => state.watchlist.add(id));
+  localStorage.setItem('bkk_cctv_watchlist', JSON.stringify([...state.watchlist]));
+  updateWatchlistBadges();
+  render();
+}
+
+function setGridLayout(cols) {
+  state.gridCols = cols;
+  localStorage.setItem('bkk_cctv_grid_cols', cols);
+  const grid = el('camera-grid');
+  if (!grid) return;
+  grid.className = cols === 2
+    ? 'grid grid-cols-1 md:grid-cols-2 gap-4'
+    : cols === 4
+    ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-4'
+    : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4';
+
+  [2, 3, 4].forEach(c => {
+    const btn = el(`grid-cols-${c}`);
+    if (btn) {
+      const active = c === cols;
+      btn.classList.toggle('is-active', active);
+      btn.classList.toggle('bg-white', active);
+      btn.classList.toggle('dark:bg-slate-800', active);
+      btn.classList.toggle('text-rose-500', active);
+      btn.classList.toggle('shadow-sm', active);
+    }
+  });
+}
+
+function setTrafficFilter(filter) {
+  state.trafficFilter = filter;
+  document.querySelectorAll('[data-filter]').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.filter === filter);
+  });
+
+  const ind = el('active-filter-indicator');
+  if (ind) {
+    if (filter === 'all') {
+      ind.classList.add('hidden');
+      ind.textContent = '';
+    } else {
+      ind.classList.remove('hidden');
+      const labels = {
+        watchlist: '⭐ Watchlist',
+        jam: '🚨 ติดขัดสะสม',
+        slow: '🟡 ชะลอตัว',
+        flowing: '🟢 คล่องตัว'
+      };
+      ind.textContent = `ตัวกรอง: ${labels[filter] || filter}`;
+    }
+  }
+
+  if (state.view !== 'cams') {
+    switchView('cams');
+  }
+
+  applyFilter();
+}
+
+function paintTrafficBadges() {
+  state.cameras.forEach(cam => {
+    const slot = el('tb-' + cssId(cam.id));
+    if (!slot) return;
+    const tr = state.cameraTraffic.get(cam.id);
+    if (!tr) {
+      slot.innerHTML = '';
+      return;
+    }
+    if (tr.level === 'jam') {
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shadow-sm shadow-rose-500/50">ติดขัด</span>';
+    } else if (tr.level === 'slow') {
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50">ชะลอตัว</span>';
+    } else if (tr.level === 'flowing') {
+      slot.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50">คล่องตัว</span>';
+    }
+  });
+}
+
 function applyFilter() {
   const term = (el('search')?.value || '').trim().toLowerCase();
   const org = el('org-filter')?.value || '';
+  const filter = state.trafficFilter;
   const clear = el('search-clear');
   if (clear) clear.classList.toggle('hidden', !term);
 
   let shown = 0;
   document.querySelectorAll('#camera-grid [data-cam-id]').forEach(card => {
-    const hit = (!term || card.dataset.search.includes(term)) &&
-                (!org || card.dataset.org === org);
+    const camId = card.dataset.camId;
+    const hitSearch = !term || card.dataset.search.includes(term);
+    const hitOrg = !org || card.dataset.org === org;
+
+    let hitFilter = true;
+    if (filter === 'watchlist') {
+      hitFilter = state.watchlist.has(camId);
+    } else if (filter === 'jam') {
+      hitFilter = state.cameraTraffic.get(camId)?.level === 'jam';
+    } else if (filter === 'slow') {
+      hitFilter = state.cameraTraffic.get(camId)?.level === 'slow';
+    } else if (filter === 'flowing') {
+      hitFilter = state.cameraTraffic.get(camId)?.level === 'flowing';
+    }
+
+    const hit = hitSearch && hitOrg && hitFilter;
     card.classList.toggle('hidden', !hit);
     if (hit) shown++;
   });
 
   updateCameraCount(shown);
-  setEmptyMessage(shown ? '' : 'ไม่พบกล้องที่ตรงกับคำค้น');
+
+  if (!shown) {
+    if (filter === 'watchlist' && state.watchlist.size === 0) {
+      setEmptyMessage(`
+        <div class="max-w-md mx-auto p-6 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-300 dark:border-slate-800 text-center space-y-3 shadow-xl">
+          <div class="w-12 h-12 mx-auto rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
+            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+          </div>
+          <h3 class="text-base font-bold text-slate-900 dark:text-slate-100">ยังไม่มีกล้องใน Watchlist</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            เลือกปักหมุดกล้องบนการ์ด หรือคลิกปุ่มด้านล่างเพื่อเพิ่มทางแยกสำคัญ 4 จุดมาไว้บนแดชบอร์ด Multi-view
+          </p>
+          <button id="btn-add-preset-watchlist" class="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-md shadow-amber-500/25 hover:from-amber-600 hover:to-orange-600 transition-all cursor-pointer">
+            + ปักหมุดกล้องยอดนิยม 4 จุดทันที
+          </button>
+        </div>
+      `, true);
+      const presetBtn = el('btn-add-preset-watchlist');
+      if (presetBtn) presetBtn.addEventListener('click', setWatchlistPresets);
+    } else {
+      setEmptyMessage('ไม่พบกล้องที่ตรงกับเงื่อนไขการค้นหา/ตัวกรอง');
+    }
+  } else {
+    setEmptyMessage('');
+  }
 }
 
 function updateCameraCount(shown) {
   const count = el('camera-count');
-  if (!count) return;
+  const badgeCams = el('badge-cams-count');
+  const badgeTotal = el('badge-total-cams');
   const total = state.cameras.length;
-  count.textContent = shown === total ? `${total} กล้อง` : `${shown} จาก ${total} กล้อง`;
+
+  if (count) count.textContent = shown === total ? `${total} กล้องพร้อมดู` : `${shown} จาก ${total} กล้อง`;
+  if (badgeCams) badgeCams.textContent = total;
+  if (badgeTotal) badgeTotal.textContent = total;
 }
 
-function setEmptyMessage(text) {
+function setEmptyMessage(content, isHtml = false) {
   const box = el('grid-empty');
   if (!box) return;
-  box.textContent = text;
-  box.classList.toggle('hidden', !text);
+  if (!content) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+  } else {
+    box.classList.remove('hidden');
+    if (isHtml) box.innerHTML = content;
+    else box.textContent = content;
+  }
 }
 
 
 // --- Recordings ------------------------------------------------------------
 //
-// recorder/record.py takes a few seconds of video off every camera each round.
-// A card plays the newest of those clips, so what a viewer sees is traffic
-// actually moving, at most a round old. A frame every ten minutes was the
-// first attempt and could not be read as traffic at all - the road simply
-// looked different each time.
+// recorder/record.py keeps ten minutes of video from every camera, one clip
+// after another with no gap. A card plays them in the order they were
+// recorded, so a viewer watching a card sees the junction as it actually ran,
+// not a sample of it.
 
 async function loadRecordings() {
   try {
@@ -313,8 +552,8 @@ function paintRecording(cam) {
     video.play().catch(() => { /* a card off screen may refuse to start */ });
   };
 
-  // One clip is six seconds of a ten minute gap, so playing straight on into
-  // the next is the only way a card shows more than a moment of the day.
+  // A clip is ten minutes and the next one is already recorded by the time it
+  // ends, so a card that runs straight on never has to wait for one.
   video.addEventListener('ended', () => {
     const list = video.dataset.clips.split(' ');
     const next = list.indexOf(video.dataset.clip) + 1;
@@ -771,31 +1010,97 @@ function addCameraMarkers() {
   state.markers = [];
 
   state.cameras.forEach(cam => {
-    const pin = document.createElement('div');
-    pin.className = 'cursor-pointer';
-    pin.innerHTML = `
-      <div class="w-6 h-6 rounded-full bg-rose-600 border-2 border-white shadow-lg flex items-center justify-center">
-        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-      </div>`;
+    const tr = state.cameraTraffic.get(cam.id);
+    const level = tr ? tr.level : null;
 
-    const popup = new maplibregl.Popup({ offset: 16, maxWidth: '340px' })
+    const pin = document.createElement('div');
+    pin.className = 'cctv-custom-pin ' +
+      (level === 'jam' ? 'cctv-pin-congested' :
+       level === 'slow' ? 'cctv-pin-moderate' :
+       level === 'flowing' ? 'cctv-pin-flowing' :
+       'bg-rose-600 border-2 border-white shadow-lg');
+    
+    pin.title = `${cam.title} ${tr ? '(' + tr.label + ')' : ''}`;
+    pin.innerHTML = `
+      <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+      </svg>`;
+
+    const statusBadge = level === 'jam'
+      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white shadow-sm shadow-rose-500/50">ติดขัด</span>'
+      : level === 'slow'
+      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50">ชะลอตัว</span>'
+      : level === 'flowing'
+      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50">คล่องตัว</span>'
+      : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700 text-slate-300">LIVE</span>';
+
+    const isStarred = state.watchlist.has(cam.id);
+
+    const popup = new maplibregl.Popup({ offset: 16, maxWidth: '360px' })
       .setHTML(`
-        <div class="text-slate-900">
-          <p class="font-semibold text-sm mb-1">${escapeHtml(cam.title)}</p>
-          <video id="pv-${cssId(cam.id)}" class="w-full rounded" muted playsinline autoplay controls></video>
+        <div class="space-y-2 text-slate-900 dark:text-white">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <p class="font-bold text-xs leading-snug line-clamp-2">${escapeHtml(cam.title)}</p>
+              <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">${escapeHtml(cam.org)}</p>
+            </div>
+            ${statusBadge}
+          </div>
+          <div class="relative bg-black rounded-xl overflow-hidden aspect-video flex items-center justify-center ring-1 ring-white/10">
+            <video id="pv-${cssId(cam.id)}" class="w-full h-full object-contain" muted playsinline autoplay controls></video>
+          </div>
+          <div class="flex items-center justify-between pt-1 gap-1.5 text-xs">
+            <button id="pop-star-${cssId(cam.id)}" class="px-2.5 py-1 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer">
+              <span class="${isStarred ? 'text-amber-500' : 'text-slate-400'}">★</span>
+              <span>${isStarred ? 'ใน Watchlist' : 'ปักหมุด'}</span>
+            </button>
+            <div class="flex items-center gap-1 ml-auto">
+              <button id="pop-pip-${cssId(cam.id)}" class="p-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer" title="Picture-in-Picture">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11h-6a1 1 0 00-1 1v4a1 1 0 001 1h6a1 1 0 001-1v-4a1 1 0 00-1-1z"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+              </button>
+              <button id="pop-det-${cssId(cam.id)}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold transition-colors cursor-pointer">
+                ดูเต็มจอ / AI
+              </button>
+            </div>
+          </div>
         </div>`);
+
+    popup.on('open', () => {
+      attachPlayer(cam, 'pv-');
+      const starBtn = el(`pop-star-${cssId(cam.id)}`);
+      if (starBtn) {
+        starBtn.addEventListener('click', () => {
+          toggleWatchlist(cam.id);
+          const nowStarred = state.watchlist.has(cam.id);
+          starBtn.querySelector('span:first-child').className = nowStarred ? 'text-amber-500' : 'text-slate-400';
+          starBtn.querySelector('span:last-child').textContent = nowStarred ? 'ใน Watchlist' : 'ปักหมุด';
+        });
+      }
+      const pipBtn = el(`pop-pip-${cssId(cam.id)}`);
+      if (pipBtn) {
+        pipBtn.addEventListener('click', () => {
+          const v = el(`pv-${cssId(cam.id)}`);
+          if (v) togglePiP(v);
+        });
+      }
+      const detBtn = el(`pop-det-${cssId(cam.id)}`);
+      if (detBtn) {
+        detBtn.addEventListener('click', () => {
+          popup.remove();
+          openDetail(cam);
+        });
+      }
+    });
+
+    popup.on('close', () => {
+      const hls = state.players.get('popup:' + cam.id);
+      if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('popup:' + cam.id); }
+    });
 
     const marker = new maplibregl.Marker({ element: pin })
       .setLngLat([cam.lng, cam.lat])
       .setPopup(popup)
       .addTo(state.map);
-
-    // Only start a stream when someone actually opens the popup
-    popup.on('open', () => attachPlayer(cam, 'pv-'));
-    popup.on('close', () => {
-      const hls = state.players.get('popup:' + cam.id);
-      if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('popup:' + cam.id); }
-    });
 
     state.markers.push(marker);
   });
@@ -803,17 +1108,20 @@ function addCameraMarkers() {
 
 async function loadTrafficIndex() {
   const box = el('traffic-index');
+  const sideBox = el('sidebar-traffic-index');
   const stamp = el('traffic-updated');
-  if (!box) return;
   try {
     const r = await fetch('/api/traffic-index');
     const d = await r.json();
     const i = Number(d.index);
     const label = i < 4 ? 'คล่องตัว' : i < 7 ? 'ชะลอตัว' : 'ติดขัด';
-    box.textContent = `ดัชนีจราจร ${i.toFixed(1)} · ${label}`;
+    const text = `ดัชนีจราจร ${i.toFixed(1)} · ${label}`;
+    if (box) box.textContent = text;
+    if (sideBox) sideBox.textContent = text;
     if (stamp) stamp.textContent = 'อัปเดต ' + new Date().toLocaleTimeString('th-TH');
   } catch (err) {
-    box.textContent = 'ดัชนีจราจร: ไม่พร้อมใช้งาน';
+    if (box) box.textContent = 'ดัชนีจราจร: ไม่พร้อมใช้งาน';
+    if (sideBox) sideBox.textContent = 'ดัชนี: ออฟไลน์';
   }
 }
 
@@ -912,11 +1220,49 @@ function renderAdvice(data) {
   if (stamp) stamp.textContent = 'อัปเดต ' + new Date(data.updatedAt).toLocaleTimeString('th-TH');
 }
 
+function parseTrafficCongestion(data) {
+  state.cameraTraffic.clear();
+  let jamCount = 0;
+  let slowCount = 0;
+  let flowingCount = 0;
+
+  (data.roads || []).forEach(road => {
+    if (road.congestion && Array.isArray(road.cameras)) {
+      road.cameras.forEach(c => {
+        state.cameraTraffic.set(c.id, {
+          roadName: road.name,
+          level: road.congestion.level,
+          score: road.congestion.score,
+          label: road.congestion.label,
+          action: road.advice ? road.advice.action : null
+        });
+        if (road.congestion.level === 'jam') jamCount++;
+        else if (road.congestion.level === 'slow') slowCount++;
+        else if (road.congestion.level === 'flowing') flowingCount++;
+      });
+    }
+  });
+
+  const bJam = el('badge-jam-count');
+  if (bJam) bJam.textContent = jamCount;
+  const bSlow = el('badge-slow-count');
+  if (bSlow) bSlow.textContent = slowCount;
+  const bFlow = el('badge-flowing-count');
+  if (bFlow) bFlow.textContent = flowingCount;
+
+  paintTrafficBadges();
+  if (state.view === 'map' && state.map && state.map.isStyleLoaded()) {
+    addCameraMarkers();
+  }
+}
+
 async function loadAdvice() {
   const summary = el('advice-summary');
   try {
     const res = await fetch('/api/traffic-advice');
-    renderAdvice(await res.json());
+    const data = await res.json();
+    parseTrafficCongestion(data);
+    renderAdvice(data);
   } catch (err) {
     if (summary) summary.textContent = 'อ่านข้อมูลจราจรไม่สำเร็จ';
   }
@@ -930,10 +1276,18 @@ function switchView(view) {
   el('view-map').classList.toggle('hidden', view !== 'map');
   el('view-advice').classList.toggle('hidden', view !== 'advice');
 
-  el('tab-cams').classList.toggle('is-active', view === 'cams');
-  el('tab-map').classList.toggle('is-active', view === 'map');
-  el('tab-advice').classList.toggle('is-active', view === 'advice');
-  // The search box and the play controls have nothing to act on outside the grid
+  // Sync sidebar tabs & mobile tabs
+  document.querySelectorAll('[data-view-target]').forEach(btn => {
+    const active = btn.dataset.viewTarget === view;
+    btn.classList.toggle('is-active', active);
+    if (btn.classList.contains('mobile-tab')) {
+      btn.classList.toggle('text-rose-600', active);
+      btn.classList.toggle('dark:text-rose-400', active);
+      btn.classList.toggle('text-slate-500', !active);
+      btn.classList.toggle('dark:text-slate-400', !active);
+    }
+  });
+
   document.body.classList.toggle('hide-toolbar', view !== 'cams');
 
   if (view === 'map') {
@@ -950,13 +1304,20 @@ function switchView(view) {
 
 function startClock() {
   const tick = () => {
+    const timeStr = new Date().toLocaleTimeString('th-TH');
     const c = el('clock');
-    if (c) c.textContent = new Date().toLocaleTimeString('th-TH');
+    if (c) c.textContent = timeStr;
+    const sc = el('sidebar-clock');
+    if (sc) sc.textContent = timeStr;
   };
   tick();
   setInterval(tick, 1000);
 }
 
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+}
 
 // So it is possible to tell at a glance whether the browser is running the
 // current code - the question that cost several rounds of debugging
@@ -972,13 +1333,33 @@ function showBuild() {
 document.addEventListener('DOMContentLoaded', () => {
   showBuild();
   startClock();
+  setGridLayout(state.gridCols);
+  updateWatchlistBadges();
   loadCameras();
+  loadAdvice();
+  loadTrafficIndex();
+
   const btn = el('btn-refresh');
-  if (btn) btn.addEventListener('click', loadCameras);
-  el('tab-cams').addEventListener('click', () => switchView('cams'));
-  el('tab-map').addEventListener('click', () => switchView('map'));
-  el('tab-advice').addEventListener('click', () => switchView('advice'));
-  el('tab-cams').classList.add('is-active');
+  if (btn) btn.addEventListener('click', () => { loadCameras(); loadAdvice(); loadTrafficIndex(); });
+  const mBtn = el('mobile-btn-refresh');
+  if (mBtn) mBtn.addEventListener('click', () => { loadCameras(); loadAdvice(); loadTrafficIndex(); });
+
+  // Sidebar and Mobile navigation tabs
+  document.querySelectorAll('[data-view-target]').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.viewTarget));
+  });
+
+  // Filter buttons & pills (All, Watchlist, Jam, Slow, Flowing)
+  document.querySelectorAll('[data-filter]').forEach(btn => {
+    btn.addEventListener('click', () => setTrafficFilter(btn.dataset.filter));
+  });
+
+  // Multi-view Grid layout switchers
+  [2, 3, 4].forEach(cols => {
+    const b = el(`grid-cols-${cols}`);
+    if (b) b.addEventListener('click', () => setGridLayout(cols));
+  });
+
   const adviceBtn = el('advice-refresh');
   if (adviceBtn) adviceBtn.addEventListener('click', loadAdvice);
 
@@ -993,12 +1374,20 @@ document.addEventListener('DOMContentLoaded', () => {
     applyFilter();
   });
 
-  const theme = el('btn-theme');
-  if (theme) theme.addEventListener('click', () => {
-    // The inline script in <head> put the class there; this only flips it
-    const dark = document.documentElement.classList.toggle('dark');
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
+  // Global keyboard shortcut '/' to focus search
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement !== search && !state.detail) {
+      e.preventDefault();
+      search?.focus();
+      search?.select();
+    }
   });
+
+  const theme = el('btn-theme');
+  if (theme) theme.addEventListener('click', toggleTheme);
+  const mTheme = el('mobile-btn-theme');
+  if (mTheme) mTheme.addEventListener('click', toggleTheme);
+
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
   setInterval(() => { if (state.view === 'advice') loadAdvice(); }, ADVICE_REFRESH_MS);
 
@@ -1006,13 +1395,14 @@ document.addEventListener('DOMContentLoaded', () => {
   el('detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
   el('detail-tab-det').addEventListener('click', () => setDetailMode('det'));
   el('detail-tab-live').addEventListener('click', () => setDetailMode('live'));
+  const detailPip = el('detail-pip-btn');
+  if (detailPip) detailPip.addEventListener('click', () => togglePiP(el('detail-video')));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.detail) closeDetail(); });
-
 
   const overlayBtn = el('btn-overlay');
   if (overlayBtn) {
     const paint = () => {
-      overlayBtn.textContent = state.showOverlay ? 'ซ่อนกรอบ' : 'แสดงกรอบ';
+      overlayBtn.textContent = state.showOverlay ? 'ซ่อนกรอบ AI' : 'แสดงกรอบ AI';
       overlayBtn.classList.toggle('is-on', state.showOverlay);
     };
     paint();
@@ -1024,8 +1414,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   window.addEventListener('resize', () => redrawAllBoxes());
-  // Entering or leaving fullscreen changes the picture's rect, and Safari does
-  // not always fire resize for it
   document.addEventListener('fullscreenchange', () => setTimeout(redrawAllBoxes, 200));
   document.addEventListener('webkitfullscreenchange', () => setTimeout(redrawAllBoxes, 200));
 
@@ -1035,10 +1423,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDetections();
   }, 20000);
 
-  // A round finishes whenever it finishes, so matching the recorder's ten
-  // minutes would leave a new frame sitting unseen for most of that. Asking
-  // every thirty seconds shows it within half a minute; the server holds the
-  // answer for fifteen so this costs a cached reply, not a walk of the archive.
   loadRecordings();
   setInterval(() => {
     if (state.view === 'cams') loadRecordings();

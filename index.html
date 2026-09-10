@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ถ่ายทอดสดการจราจร กรุงเทพฯ | Bangkok Traffic Live</title>
+  <title>กล้องจราจรกรุงเทพฯ อัจฉริยะ | BKK Traffic Live & AI Dashboard</title>
 
-  <!-- Set the theme before first paint, or the page flashes the wrong one -->
+  <!-- Pre-paint theme setup -->
   <script>
     (function () {
       var t = localStorage.getItem('theme');
@@ -33,7 +33,8 @@
               rose: '#f43f5e',
               emerald: '#10b981',
               amber: '#f59e0b',
-              dark: '#0b0f19',
+              dark: '#090d16',
+              surface: '#0f172a',
               card: '#111827',
               border: '#1e293b'
             }
@@ -47,139 +48,389 @@
   <script src="/js/maplibre-gl.js"></script>
   <link rel="stylesheet" href="/css/app.css" />
 </head>
-<body class="bg-slate-100 dark:bg-[#0b0f19] text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-rose-500 selection:text-white">
+<body class="bg-slate-100 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col md:flex-row antialiased selection:bg-rose-500 selection:text-white">
 
-  <header class="sticky top-0 z-40 glass-nav">
-    <!-- Row 1: identity, view switch, global actions -->
-    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
-      <div class="flex items-center gap-2.5 min-w-0">
-        <div class="w-9 h-9 shrink-0 rounded-xl bg-gradient-to-br from-rose-500 to-orange-500 flex items-center justify-center shadow-lg shadow-rose-600/25">
+  <!-- =========================================================================
+       SIDEBAR NAVIGATION (หัว 3 ตัว ย้ายมาไว้ข้างๆ ตามที่ผู้ใช้ระบุ)
+       ========================================================================= -->
+  <aside id="sidebar" class="hidden md:flex flex-col w-64 lg:w-72 shrink-0 glass-panel border-r border-slate-200/80 dark:border-slate-800/80 sticky top-0 h-screen z-40 overflow-y-auto">
+    <!-- Brand / Identity -->
+    <div class="p-4 border-b border-slate-200/80 dark:border-slate-800/80">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 shrink-0 rounded-2xl bg-gradient-to-br from-rose-500 via-rose-600 to-orange-500 flex items-center justify-center shadow-lg shadow-rose-500/25 ring-1 ring-white/20">
           <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
           </svg>
         </div>
-        <div class="min-w-0 hidden sm:block">
-          <h1 class="text-sm sm:text-base font-bold leading-tight truncate">ถ่ายทอดสดการจราจร กรุงเทพฯ</h1>
-          <p class="text-[11px] text-slate-500 dark:text-slate-400 truncate">วิดีโอสดจากกล้องบนถนนในเมือง</p>
+        <div class="min-w-0">
+          <div class="flex items-center gap-1.5">
+            <h1 class="text-sm font-bold leading-tight tracking-tight">BKK Traffic Live</h1>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20">LIVE</span>
+          </div>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 truncate">กล้องจราจรและตรวจจับ AI</p>
         </div>
       </div>
 
-      <nav class="mx-auto flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-800">
-        <button id="tab-cams" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg><span>กล้องสด</span></button>
-        <button id="tab-map" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg><span>แผนที่จราจร</span></button>
-        <button id="tab-advice" class="view-tab"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg><span>คำแนะนำปล่อยรถ</span></button>
-      </nav>
-
-      <div class="flex items-center gap-1.5 shrink-0">
-        <button id="btn-theme" class="icon-btn" title="สลับโหมดสว่าง/มืด" aria-label="สลับโหมดสว่าง/มืด">
-          <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-          <svg class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
-        </button>
-        <button id="btn-refresh" class="icon-btn" title="โหลดรายการกล้องใหม่" aria-label="โหลดรายการกล้องใหม่">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      <!-- Traffic Index Mini Banner in Sidebar -->
+      <div class="mt-3.5 p-2.5 rounded-xl bg-slate-200/60 dark:bg-slate-900/70 border border-slate-300/60 dark:border-slate-800/80 flex items-center justify-between text-xs">
+        <div class="flex items-center gap-2">
+          <span class="relative flex h-2 w-2">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <span id="sidebar-traffic-index" class="font-medium text-slate-700 dark:text-slate-300 text-[11.5px]">ดัชนีจราจร: กำลังโหลด…</span>
+        </div>
+        <button id="sidebar-index-info" title="ข้อมูลจราจรจาก Longdo" class="text-slate-400 hover:text-slate-200">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         </button>
       </div>
     </div>
 
-    <!-- Row 2: everything that only makes sense while looking at cameras -->
-    <div id="toolbar" class="border-t border-slate-300/70 dark:border-slate-800/80">
-      <div class="max-w-[1600px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center gap-2">
-        <div class="relative flex-1 min-w-[190px]">
-          <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input id="search" type="search" autocomplete="off" placeholder="ค้นหาชื่อแยก ถนน หรือรหัสกล้อง..."
-                 class="w-full pl-9 pr-8 py-2 rounded-xl text-sm bg-white dark:bg-slate-900/80 border border-slate-300 dark:border-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/60 focus:border-rose-500" />
-          <button id="search-clear" class="hidden absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer" title="ล้างคำค้น" aria-label="ล้างคำค้น">
+    <!-- Navigation Section (หัว 3 ตัว หลัก) -->
+    <div class="p-3 space-y-1 flex-1">
+      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-3 py-1.5">
+        ระบบหลัก (MAIN VIEWS)
+      </div>
+
+      <!-- หัวที่ 1: กล้องสด -->
+      <button id="tab-cams" data-view-target="cams" class="sidebar-tab is-active" title="ดูกล้องสดและมัลติวิว">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+        <span class="truncate">กล้องสด & มัลติวิว</span>
+        <span id="badge-cams-count" class="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/20 text-white dark:bg-rose-500/20 dark:text-rose-300">0</span>
+      </button>
+
+      <!-- หัวที่ 2: แผนที่จราจร -->
+      <button id="tab-map" data-view-target="map" class="sidebar-tab" title="แผนที่สภาพจราจรแบบ Interactive">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+        </svg>
+        <span class="truncate">แผนที่จราจร</span>
+        <span class="ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Map</span>
+      </button>
+
+      <!-- หัวที่ 3: คำแนะนำปล่อยรถ -->
+      <button id="tab-advice" data-view-target="advice" class="sidebar-tab" title="คำแนะนำการปรับสัญญาณไฟตามความหนาแน่น">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <span class="truncate">คำแนะนำปล่อยรถ</span>
+        <span id="badge-advice-alert" class="ml-auto hidden text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500 text-white animate-pulse">!</span>
+      </button>
+
+      <!-- Quick View / Watchlist Shortcuts in Sidebar -->
+      <div class="pt-5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-3">
+        ตัวกรองและกล้องโปรด
+      </div>
+
+      <button id="side-filter-all" data-filter="all" class="sidebar-subtab is-active" title="แสดงกล้องทั้งหมด">
+        <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <span>ทั้งหมด</span>
+        <span id="badge-total-cams" class="ml-auto text-[11px] text-slate-400 tabular-nums"></span>
+      </button>
+
+      <button id="side-filter-watchlist" data-filter="watchlist" class="sidebar-subtab" title="กล้องที่เลือกปักหมุดไว้ (Custom Watchlist 4-9 จอ)">
+        <svg class="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+        </svg>
+        <span>กล้องโปรด (Watchlist)</span>
+        <span id="badge-watchlist-count" class="ml-auto text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-500/15 text-amber-500 dark:text-amber-400">0</span>
+      </button>
+
+      <button id="side-filter-jam" data-filter="jam" class="sidebar-subtab" title="กรองเฉพาะจุดที่การจราจรติดขัดสะสม">
+        <span class="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-sm shadow-rose-500/80 shrink-0"></span>
+        <span>ติดขัดสะสม</span>
+        <span id="badge-jam-count" class="ml-auto text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-rose-500/15 text-rose-500 dark:text-rose-400">0</span>
+      </button>
+
+      <button id="side-filter-slow" data-filter="slow" class="sidebar-subtab" title="กรองจุดที่ชะลอตัว">
+        <span class="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>
+        <span>ชะลอตัว</span>
+        <span id="badge-slow-count" class="ml-auto text-[10px] font-medium text-slate-400">0</span>
+      </button>
+
+      <button id="side-filter-flowing" data-filter="flowing" class="sidebar-subtab" title="กรองจุดที่คล่องตัว">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+        <span>คล่องตัว</span>
+        <span id="badge-flowing-count" class="ml-auto text-[10px] font-medium text-slate-400">0</span>
+      </button>
+    </div>
+
+    <!-- Sidebar Footer -->
+    <div class="p-3 border-t border-slate-200/80 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/50 text-[11px] space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="text-slate-500 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+          เวลาปัจจุบัน
+        </span>
+        <span id="sidebar-clock" class="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">--:--:--</span>
+      </div>
+
+      <div class="flex items-center justify-between pt-1 border-t border-slate-200/60 dark:border-slate-800/60">
+        <div class="flex items-center gap-1.5">
+          <button id="btn-theme" class="icon-btn !w-8 !h-8" title="สลับโหมดสว่าง/มืด" aria-label="สลับโหมดสว่าง/มืด">
+            <svg class="w-4 h-4 hidden dark:block text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            <svg class="w-4 h-4 block dark:hidden text-slate-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+          </button>
+          <button id="btn-refresh" class="icon-btn !w-8 !h-8" title="โหลดข้อมูลใหม่" aria-label="โหลดข้อมูลใหม่">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </button>
+        </div>
+        <span id="ai-chip" class="text-[10px] font-medium text-slate-400">YOLO 11 Ready</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- =========================================================================
+       MOBILE TOP HEADER (เฉพาะจอเล็ก)
+       ========================================================================= -->
+  <header class="md:hidden sticky top-0 z-40 glass-nav border-b border-slate-200 dark:border-slate-800 px-4 py-2.5 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-rose-500 to-orange-500 flex items-center justify-center shadow-md shadow-rose-500/20">
+        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-xs font-bold leading-tight">BKK Traffic Live</h1>
+        <p class="text-[10px] text-slate-500">กล้องสด กทม.</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1.5">
+      <button id="mobile-btn-theme" class="icon-btn !w-8 !h-8" title="สลับโหมด" aria-label="สลับโหมด">
+        <svg class="w-3.5 h-3.5 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+        <svg class="w-3.5 h-3.5 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+      </button>
+      <button id="mobile-btn-refresh" class="icon-btn !w-8 !h-8" title="รีเฟรช" aria-label="รีเฟรช">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- =========================================================================
+       MOBILE BOTTOM NAVIGATION (เฉพาะจอเล็ก เพื่อความสะดวกในการใช้งาน)
+       ========================================================================= -->
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 z-40 glass-nav border-t border-slate-200 dark:border-slate-800 flex items-center justify-around py-2 px-2">
+    <button data-view-target="cams" class="mobile-tab flex flex-col items-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+      <span>กล้องสด</span>
+    </button>
+    <button data-view-target="map" class="mobile-tab flex flex-col items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+      <span>แผนที่</span>
+    </button>
+    <button data-view-target="advice" class="mobile-tab flex flex-col items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+      <span>ปล่อยรถ</span>
+    </button>
+    <button id="mobile-btn-watchlist" data-filter="watchlist" class="mobile-tab flex flex-col items-center gap-1 text-[11px] font-medium text-amber-500">
+      <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+      <span>Watchlist</span>
+    </button>
+  </nav>
+
+  <!-- =========================================================================
+       MAIN CONTENT CONTAINER
+       ========================================================================= -->
+  <div class="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
+
+    <!-- Top Sticky Toolbar (Search, Filter Pills, Grid switches) -->
+    <header id="toolbar" class="sticky top-0 z-30 glass-nav border-b border-slate-200/80 dark:border-slate-800/80">
+      <div class="max-w-[1700px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center gap-2.5">
+        
+        <!-- Smart Search Input -->
+        <div class="relative flex-1 min-w-[220px]">
+          <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <input id="search" type="search" autocomplete="off" placeholder="ค้นหาชื่อถนน, ทางแยก หรือรหัสกล้อง..."
+                 class="w-full pl-9 pr-8 py-2 rounded-xl text-xs sm:text-sm bg-white dark:bg-slate-900/90 border border-slate-300 dark:border-slate-800 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500" />
+          <button id="search-clear" class="hidden absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer" title="ล้างคำค้น" aria-label="ล้างคำค้น">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
 
-        <select id="org-filter" class="ctl" title="กรองตามหน่วยงานเจ้าของกล้อง">
+        <!-- Filter Pills Strip (Smart Filters) -->
+        <div class="hidden sm:flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <button data-filter="all" class="filter-pill pill-all is-active">
+            <span>ทั้งหมด</span>
+          </button>
+          <button data-filter="watchlist" class="filter-pill pill-watchlist text-amber-500">
+            <svg class="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+            <span>Watchlist</span>
+          </button>
+          <button data-filter="jam" class="filter-pill pill-jam">
+            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+            <span>ติดขัด</span>
+          </button>
+          <button data-filter="slow" class="filter-pill pill-slow">
+            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+            <span>ชะลอตัว</span>
+          </button>
+          <button data-filter="flowing" class="filter-pill pill-flowing">
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>คล่องตัว</span>
+          </button>
+        </div>
+
+        <!-- Agency Filter -->
+        <select id="org-filter" class="ctl !h-9 !text-xs max-w-[140px] sm:max-w-none" title="กรองตามหน่วยงานเจ้าของกล้อง">
           <option value="">ทุกหน่วยงาน</option>
         </select>
 
-
-        <button id="btn-overlay" class="ctl-btn">ซ่อนกรอบ</button>
-      </div>
-
-      <!-- Counters, demoted out of the button row so the buttons read as buttons -->
-      <div class="max-w-[1600px] mx-auto px-4 sm:px-6 pb-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-        <span id="camera-count" class="font-semibold text-slate-700 dark:text-slate-200"></span>
-        <span class="opacity-40">•</span>
-        <span id="vehicle-total" class="hidden text-sky-600 dark:text-sky-400 font-medium"></span>
-        <span id="focus-badge" class="hidden text-emerald-600 dark:text-emerald-400 font-medium"></span>
-        <span id="clock" class="ml-auto font-mono tabular-nums"></span>
-      </div>
-    </div>
-  </header>
-
-  <main class="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 py-5">
-    <div id="view-cams">
-      <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
-      <div id="grid-empty" class="hidden py-20 text-center text-sm text-slate-500 dark:text-slate-400"></div>
-    </div>
-
-    <div id="view-map" class="hidden space-y-3">
-      <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-300 dark:border-slate-800">
-        <div class="flex items-center gap-4 text-xs">
-          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#54C00C"></span>คล่องตัว</span>
-          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#FEDE04"></span>ชะลอตัว</span>
-          <span class="flex items-center gap-1.5"><span class="w-4 h-1.5 rounded-full" style="background:#FF2020"></span>ติดขัด</span>
-          <span class="text-slate-500 hidden sm:inline">| หมุดแดง = กล้องสด คลิกเพื่อดู</span>
+        <!-- Grid Multi-View Layout Switcher (2 cols, 3 cols, 4 cols) -->
+        <div class="hidden lg:flex items-center rounded-xl bg-slate-200/70 dark:bg-slate-900/80 border border-slate-300 dark:border-slate-800 p-0.5">
+          <button id="grid-cols-2" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white" title="ตาราง 2 คอลัมน์ (2x2 Multi-view)">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>
+          </button>
+          <button id="grid-cols-3" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white is-active bg-white dark:bg-slate-800 text-rose-500 shadow-sm" title="ตาราง 3 คอลัมน์ (มาตรฐาน)">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="9.5" y="3" width="5" height="18" rx="1"/><rect x="16" y="3" width="5" height="18" rx="1"/></svg>
+          </button>
+          <button id="grid-cols-4" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white" title="ตาราง 4 คอลัมน์ (สำหรับจอใหญ่)">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="4" height="18" rx="0.8"/><rect x="7.3" y="3" width="4" height="18" rx="0.8"/><rect x="12.6" y="3" width="4" height="18" rx="0.8"/><rect x="18" y="3" width="4" height="18" rx="0.8"/></svg>
+          </button>
         </div>
-        <div class="flex items-center gap-2">
-          <span id="traffic-index" class="px-2.5 py-1 rounded-lg bg-slate-200 dark:bg-slate-800 text-xs"></span>
-          <span id="traffic-updated" class="text-[11px] text-slate-500"></span>
-        </div>
-      </div>
-      <div id="map" class="w-full rounded-2xl overflow-hidden border border-slate-300 dark:border-slate-800" style="height:72vh"></div>
-    </div>
 
-    <!-- Signal advice, read from the same traffic colours the map draws -->
-    <div id="view-advice" class="hidden space-y-3">
-      <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-300 dark:border-slate-800">
-        <div id="advice-summary" class="text-xs text-slate-600 dark:text-slate-300">กำลังอ่านสีถนนจากแผนที่จราจร…</div>
-        <div class="flex items-center gap-2">
-          <span id="advice-updated" class="text-[11px] text-slate-500"></span>
-          <button id="advice-refresh" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer">รีเฟรช</button>
-        </div>
-      </div>
-
-      <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 px-1">
-        อ่านจากสีเส้นจราจรรอบกล้องแต่ละตัว (รัศมี 700 เมตร) อัปเดตทุก 5 นาที —
-        สีบอกว่าถนน<em>ดูแน่นแค่ไหน</em> ไม่ได้บอกว่ามีรถมากี่คันต่อนาที
-        ตัวเลขวินาทีจึงเป็นจุดตั้งต้นสำหรับคนที่เฝ้าแยกอยู่ ไม่ใช่ค่าที่ตั้งได้เลยโดยไม่ดูหน้างาน
-      </p>
-
-      <div id="advice-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3"></div>
-      <div id="advice-empty" class="hidden py-20 text-center text-sm text-slate-500 dark:text-slate-400"></div>
-    </div>
-  </main>
-
-  <!-- Camera detail: what the detector saw, and the live stream -->
-  <div id="detail" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto">
-    <div class="max-w-5xl mx-auto bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
-      <div class="flex items-start justify-between gap-3 p-4 border-b border-slate-200 dark:border-slate-800">
-        <div class="min-w-0">
-          <h2 id="detail-title" class="text-base font-bold leading-snug truncate"></h2>
-          <p id="detail-org" class="text-[11px] text-slate-500 mt-0.5"></p>
-        </div>
-        <button id="detail-close" class="icon-btn shrink-0" title="ปิด (Esc)" aria-label="ปิด">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        <!-- AI Bounding Box Overlay Toggle -->
+        <button id="btn-overlay" class="ctl-btn !h-9 !text-xs shrink-0 flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M3 9h2m-2 6h2m14-6h2m-2 6h2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          <span>กรอบ AI</span>
         </button>
       </div>
 
+      <!-- Secondary Info Row: Counts and status chips -->
+      <div class="max-w-[1700px] mx-auto px-4 sm:px-6 pb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <span id="camera-count" class="font-semibold text-slate-700 dark:text-slate-200">กำลังโหลดกล้อง...</span>
+        <span class="opacity-30">•</span>
+        <span id="vehicle-total" class="hidden text-sky-600 dark:text-sky-400 font-medium"></span>
+        <span id="focus-badge" class="hidden text-emerald-600 dark:text-emerald-400 font-medium"></span>
+        <span id="active-filter-indicator" class="hidden font-medium text-rose-500"></span>
+        <span id="clock" class="ml-auto hidden sm:inline-block font-mono tabular-nums"></span>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 max-w-[1700px] w-full mx-auto px-4 sm:px-6 py-5">
+      
+      <!-- =====================================================================
+           VIEW 1: CAMERA GRID & MULTI-VIEW
+           ===================================================================== -->
+      <div id="view-cams">
+        <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+        <div id="grid-empty" class="hidden py-24 text-center text-sm text-slate-500 dark:text-slate-400"></div>
+      </div>
+
+      <!-- =====================================================================
+           VIEW 2: INTERACTIVE TRAFFIC MAP (Split-Screen Ready)
+           ===================================================================== -->
+      <div id="view-map" class="hidden space-y-3">
+        <!-- Map Header Info Strip -->
+        <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-300 dark:border-slate-800">
+          <div class="flex flex-wrap items-center gap-3 text-xs">
+            <span class="flex items-center gap-1.5 font-medium"><span class="w-3 h-3 rounded-full bg-[#10b981] shadow-sm shadow-emerald-500/50"></span>คล่องตัว</span>
+            <span class="flex items-center gap-1.5 font-medium"><span class="w-3 h-3 rounded-full bg-[#f59e0b] shadow-sm shadow-amber-500/50"></span>ชะลอตัว</span>
+            <span class="flex items-center gap-1.5 font-medium"><span class="w-3 h-3 rounded-full bg-[#f43f5e] shadow-sm shadow-rose-500/50"></span>ติดขัด</span>
+            <span class="text-slate-400 hidden lg:inline">| หมุดกล้อง: คลิกเพื่อพรีวิววิดีโอสด, เต็มจอ หรือ Picture-in-Picture</span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <span id="traffic-index" class="px-3 py-1 rounded-xl bg-slate-200/80 dark:bg-slate-800 text-xs font-semibold"></span>
+            <span id="traffic-updated" class="text-[11px] text-slate-500"></span>
+          </div>
+        </div>
+
+        <!-- Interactive Map Container -->
+        <div class="relative w-full rounded-2xl overflow-hidden border border-slate-300 dark:border-slate-800 shadow-xl" style="height:76vh">
+          <div id="map" class="w-full h-full"></div>
+          
+          <!-- Quick Map Helper Badge -->
+          <div class="absolute bottom-4 left-4 z-10 hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-800 text-[11px] text-slate-300 shadow-lg pointer-events-none">
+            <svg class="w-3.5 h-3.5 text-rose-500 animate-pulse" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6"/></svg>
+            <span>หมุดสีแดงกระพริบ = จุดที่ติดขัดสะสม</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- =====================================================================
+           VIEW 3: TRAFFIC ADVICE
+           ===================================================================== -->
+      <div id="view-advice" class="hidden space-y-4">
+        <!-- Summary KPI Card -->
+        <div class="p-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-300 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2">
+              <div class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></div>
+              <h2 class="text-sm font-bold">คำแนะนำการปล่อยสัญญาณจราจร</h2>
+            </div>
+            <p id="advice-summary" class="text-xs text-slate-500 dark:text-slate-400 mt-1">กำลังอ่านสีถนนจากแผนที่จราจร…</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="advice-updated" class="text-[11px] text-slate-500"></span>
+            <button id="advice-refresh" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition-colors cursor-pointer shadow-md shadow-rose-600/20">
+              รีเฟรชข้อมูล
+            </button>
+          </div>
+        </div>
+
+        <p class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 px-1">
+          อ่านจากสีเส้นจราจรรอบกล้องแต่ละตัว (รัศมี 700 เมตร) อัปเดตทุก 5 นาที —
+          สีบอกว่าถนน<em>ดูแน่นแค่ไหน</em> เหมาะสำหรับเจ้าหน้าที่เฝ้าแยกปรับเวลาไฟเขียวตามสถานการณ์จริง
+        </p>
+
+        <div id="advice-list" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+        <div id="advice-empty" class="hidden py-20 text-center text-sm text-slate-500 dark:text-slate-400"></div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-200/80 dark:border-slate-800/80 py-4 mt-auto">
+      <div class="max-w-[1700px] mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+        <p><span id="build" class="text-slate-400 dark:text-slate-600"></span></p>
+        <p id="source-note">สตรีม HLS จาก iTIC Motion และกรมทางหลวง เผยแพร่ผ่าน Longdo Camera API</p>
+      </div>
+    </footer>
+  </div>
+
+  <!-- =========================================================================
+       CAMERA DETAIL MODAL (AI Detection / Live Stream / PiP)
+       ========================================================================= -->
+  <div id="detail" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md p-3 sm:p-6 overflow-y-auto flex items-center justify-center">
+    <div class="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden my-auto">
+      <!-- Modal Header -->
+      <div class="flex items-start justify-between gap-3 p-4 border-b border-slate-200 dark:border-slate-800">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white">LIVE</span>
+            <h2 id="detail-title" class="text-base font-bold leading-snug truncate text-slate-900 dark:text-white"></h2>
+          </div>
+          <p id="detail-org" class="text-[11px] text-slate-500 mt-0.5"></p>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="detail-pip-btn" class="icon-btn" title="Picture-in-Picture">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11h-6a1 1 0 00-1 1v4a1 1 0 001 1h6a1 1 0 001-1v-4a1 1 0 00-1-1z"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+          </button>
+          <button id="detail-close" class="icon-btn" title="ปิด (Esc)" aria-label="ปิด">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- View Switcher Tabs inside Modal -->
       <div class="px-4 pt-3 flex items-center gap-2">
-        <button id="detail-tab-det" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 text-white cursor-pointer">ผลตรวจจับ</button>
-        <button id="detail-tab-live" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer">วิดีโอสด</button>
+        <button id="detail-tab-det" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 text-white cursor-pointer transition-colors shadow-sm">ผลตรวจจับ AI</button>
+        <button id="detail-tab-live" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer transition-colors">วิดีโอสด HLS</button>
         <span id="detail-age" class="ml-auto text-[11px] text-slate-500"></span>
       </div>
 
+      <!-- Player & Counts -->
       <div class="p-4">
-        <div class="relative bg-black rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+        <div class="relative bg-black rounded-xl overflow-hidden aspect-video flex items-center justify-center ring-1 ring-white/10">
           <img id="detail-img" class="w-full h-full object-contain" alt="" />
           <video id="detail-video" class="w-full h-full object-contain hidden" muted playsinline controls></video>
           <div id="detail-overlay" class="absolute inset-0 pointer-events-none"></div>
-          <div id="detail-msg" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 pointer-events-none"></div>
+          <div id="detail-msg" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400 pointer-events-none px-4 text-center"></div>
         </div>
 
         <div id="detail-counts" class="mt-4 flex flex-wrap gap-2"></div>
@@ -188,14 +439,8 @@
     </div>
   </div>
 
-  <footer class="border-t border-slate-300 dark:border-slate-800/80 py-4">
-    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 text-[11px] text-slate-500 leading-relaxed">
-      <p><span id="build" class="text-slate-400 dark:text-slate-600"></span></p>
-      <p id="source-note">ภาพจากกล้องของ iTIC Motion และกรมทางหลวง เผยแพร่ผ่านระบบแผนที่ Longdo</p>
-    </div>
-  </footer>
-
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.12"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>
+

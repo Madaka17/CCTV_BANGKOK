@@ -268,7 +268,18 @@ function listRecordings() {
   return data;
 }
 
-function sendRecording(res, rest) {
+// A ten minute clip is around 150 MB. Without this a browser has to take the
+// whole file before it can play any of it, and cannot seek within it at all.
+function parseRange(header, size) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec((header || '').trim());
+  if (!match || (!match[1] && !match[2])) return null;
+  // "bytes=-500" is the last 500 bytes, not a range starting at nothing
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  return start > end || start >= size ? null : { start, end };
+}
+
+function sendRecording(res, rest, rangeHeader) {
   const parts = rest.split('/').filter(Boolean);
   const file = parts.length >= 2 ? insideArchive(parts) : null;
   if (!file) {
@@ -287,12 +298,26 @@ function sendRecording(res, rest) {
   }
 
   const mp4 = file.endsWith('.mp4');
-  res.writeHead(200, {
+  const headers = {
     'Content-Type': mp4 ? 'video/mp4' : 'image/jpeg',
-    'Content-Length': stat.size,
-    // A finished day never changes; a frame from today is replaced every round
-    'Cache-Control': mp4 ? 'public, max-age=86400' : 'no-store'
-  });
+    // A clip never changes once it is in place; the recorder writes under
+    // .writing.mp4 and moves it here only when ffmpeg has finished with it
+    'Cache-Control': mp4 ? 'public, max-age=86400' : 'no-store',
+    'Accept-Ranges': 'bytes'
+  };
+
+  const range = parseRange(rangeHeader, stat.size);
+  if (range) {
+    res.writeHead(206, {
+      ...headers,
+      'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}`,
+      'Content-Length': range.end - range.start + 1
+    });
+    fs.createReadStream(file, { start: range.start, end: range.end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...headers, 'Content-Length': stat.size });
   fs.createReadStream(file).pipe(res);
 }
 
@@ -324,9 +349,8 @@ const requestHandler = async (req, res) => {
   // --- API Routes ---
 
 
-  // What recorder/record.py kept. A day in progress is frames, a finished one
-  // is a video, and both already have the boxes drawn on them - so this hands
-  // the files over and the page has nothing to overlay.
+  // What recorder/record.py kept: ten minutes of one camera per file, listed
+  // in the order they were recorded and handed over a range at a time.
   //
   // The archive lives outside the working copy, which sits under a OneDrive
   // sync root, so it is reached by path rather than served from public/.
@@ -336,7 +360,7 @@ const requestHandler = async (req, res) => {
       res.end(JSON.stringify(listRecordings(), null, 2));
       return;
     }
-    sendRecording(res, pathname.slice('/api/recording/'.length));
+    sendRecording(res, pathname.slice('/api/recording/'.length), req.headers.range);
     return;
   }
 

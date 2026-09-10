@@ -442,3 +442,221 @@ body.hide-toolbar #toolbar {
   background: rgba(245, 158, 11, 0.12);
   color: #fcd34d;
 }
+
+/* ============================================================================
+   Modern Sidebar Navigation & Deep Slate Design System
+   ============================================================================ */
+
+.sidebar-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+}
+
+.sidebar-tab:hover {
+  color: #0f172a;
+  background: rgba(241, 245, 249, 0.8);
+  border-color: rgba(203, 213, 225, 0.6);
+  transform: translateX(2px);
+}
+
+.sidebar-tab.is-active {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #e11d48 0%, #f43f5e 100%);
+  border-color: rgba(244, 63, 94, 0.4);
+  box-shadow: 0 4px 14px -2px rgba(225, 29, 72, 0.4);
+}
+
+.dark .sidebar-tab {
+  color: #94a3b8;
+}
+
+.dark .sidebar-tab:hover {
+  color: #f8fafc;
+  background: rgba(30, 41, 59, 0.6);
+  border-color: rgba(51, 65, 85, 0.6);
+}
+
+.dark .sidebar-tab.is-active {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #e11d48 0%, #be123c 100%);
+  border-color: rgba(244, 63, 94, 0.35);
+  box-shadow: 0 4px 16px -2px rgba(225, 29, 72, 0.5);
+}
+
+.sidebar-subtab {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  text-align: left;
+}
+
+.sidebar-subtab:hover {
+  color: #0f172a;
+  background: rgba(241, 245, 249, 0.7);
+}
+
+.dark .sidebar-subtab {
+  color: #94a3b8;
+}
+
+.dark .sidebar-subtab:hover {
+  color: #f8fafc;
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.sidebar-subtab.is-active {
+  color: #e11d48;
+  font-weight: 600;
+  background: rgba(225, 29, 72, 0.08);
+  border-color: rgba(225, 29, 72, 0.2);
+}
+
+.dark .sidebar-subtab.is-active {
+  color: #fb7185;
+  background: rgba(225, 29, 72, 0.15);
+  border-color: rgba(225, 29, 72, 0.3);
+}
+
+/* Modern Filter Pills */
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  background: rgba(241, 245, 249, 0.9);
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  white-space: nowrap;
+}
+
+.filter-pill:hover {
+  color: #0f172a;
+  border-color: #94a3b8;
+  background: #ffffff;
+}
+
+.dark .filter-pill {
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.85);
+  border-color: #334155;
+}
+
+.dark .filter-pill:hover {
+  color: #ffffff;
+  border-color: #64748b;
+  background: rgba(30, 41, 59, 0.85);
+}
+
+.filter-pill.is-active {
+  color: #ffffff !important;
+  background: #0f172a;
+  border-color: #0f172a;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.3);
+}
+
+.dark .filter-pill.is-active {
+  color: #ffffff !important;
+  background: #e11d48;
+  border-color: #f43f5e;
+  box-shadow: 0 2px 10px rgba(225, 29, 72, 0.4);
+}
+
+/* Specific Pill Active Tones */
+.filter-pill.pill-jam.is-active {
+  background: #e11d48 !important;
+  border-color: #f43f5e !important;
+}
+.filter-pill.pill-slow.is-active {
+  background: #d97706 !important;
+  border-color: #f59e0b !important;
+}
+.filter-pill.pill-flowing.is-active {
+  background: #059669 !important;
+  border-color: #10b981 !important;
+}
+.filter-pill.pill-watchlist.is-active {
+  background: #d97706 !important;
+  border-color: #f59e0b !important;
+}
+
+/* Card Action Overlay Buttons */
+.card-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-action-btn:hover {
+  background: rgba(225, 29, 72, 0.9);
+  border-color: rgba(244, 63, 94, 0.8);
+  transform: scale(1.08);
+}
+
+.card-action-btn.is-starred {
+  background: rgba(245, 158, 11, 0.85);
+  border-color: #fbbf24;
+  color: #ffffff;
+}
+
+/* Pulsing radar effect on congested CCTV pins */
+@keyframes pin-radar-glow {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(244, 63, 94, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+  }
+}
+
+.cctv-pin-congested {
+  animation: pin-radar-glow 2s infinite ease-in-out;
+}
+
+/* Dark Navigation Map Canvas Style */
+.dark #map .maplibregl-canvas {
+  filter: invert(93%) hue-rotate(180deg) brightness(88%) contrast(112%);
+}
+
