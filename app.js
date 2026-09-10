@@ -1514,6 +1514,7 @@ function renderMarkdown(md) {
   let html = escapeHtml(md);
 
   // Headers
+  html = html.replace(/^#### (.*$)/gim, '<h5 class="font-bold text-slate-800 dark:text-slate-200 mt-2 mb-0.5 text-[11px]">$1</h5>');
   html = html.replace(/^### (.*$)/gim, '<h4 class="font-bold text-slate-900 dark:text-white mt-2 mb-1 text-xs">$1</h4>');
   html = html.replace(/^## (.*$)/gim, '<h3 class="font-bold text-slate-900 dark:text-white mt-2.5 mb-1 text-sm">$1</h3>');
 
@@ -1523,11 +1524,26 @@ function renderMarkdown(md) {
   // Italic
   html = html.replace(/\*(.*?)\*/g, '<em class="italic text-slate-500 dark:text-slate-400">$1</em>');
 
+  // Horizontal rules
+  html = html.replace(/^---$/gim, '<hr class="my-2 border-slate-200 dark:border-slate-700/60" />');
+
   // Blockquotes
   html = html.replace(/^&gt; (.*$)/gim, '<div class="pl-2.5 py-1 my-1 border-l-2 border-purple-500 bg-purple-500/10 rounded-r text-[11px] text-slate-700 dark:text-slate-300">$1</div>');
 
   // Camera links: [text](cam:ID) -> clickable button
   html = html.replace(/\[(.*?)\]\(cam:([A-Za-z0-9_-]+)\)/g, '<a href="cam:$2" class="chat-cam-link" data-open-cam="$2">$1</a>');
+
+  // Google Maps links: [text](https://www.google.com/maps/...) -> prominent navigation button
+  html = html.replace(/\[(.*?)\]\((https?:\/\/(?:www\.)?google\.com\/maps[^\s)]+)\)/gi, (match, text, url) => {
+    const cleanUrl = url.replace(/&amp;/g, '&');
+    return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" class="chat-gmap-link" title="เปิดนำทางบน Google Maps"><svg class="w-3.5 h-3.5 inline-block shrink-0 text-emerald-500 dark:text-emerald-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg><span>${text}</span><svg class="w-2.5 h-2.5 opacity-60 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>`;
+  });
+
+  // General web links: [text](https://...)
+  html = html.replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/gi, (match, text, url) => {
+    const cleanUrl = url.replace(/&amp;/g, '&');
+    return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 underline inline-flex items-center gap-0.5">${text}<svg class="w-2.5 h-2.5 opacity-60 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>`;
+  });
 
   // Line breaks
   html = html.replace(/\n/g, '<br/>');

@@ -531,6 +531,9 @@ function evaluateMapRedRoutes(query, ctx) {
       reply += `- 🛣️ แนะนำเบี่ยงใช้ถนนคู่ขนาน หรือโครงข่ายทางด่วนใกล้เคียง เพื่อเลี่ยงช่วงที่เกิดเส้นสีแดง\n`;
     }
 
+    const gmapsSearchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(matchedRedRoad.name + ' กรุงเทพมหานคร')}`;
+    reply += `- 🗺️ **ดูสภาพจราจรบน Google Maps**: [📍 ตรวจสอบสภาพจราจร ${matchedRedRoad.name} (Google Maps)](${gmapsSearchUrl})\n`;
+
     if (greenRoads.length > 0) {
       reply += `\n**🟢 เส้นทางใกล้เคียงบนแผนที่ที่เป็นสีเขียว (คล่องตัวดี)**:\n`;
       greenRoads.slice(0, 3).forEach(gr => {
@@ -549,6 +552,7 @@ function evaluateMapRedRoutes(query, ctx) {
     const c = r.congestion;
     (r.cameras || []).forEach(cam => relatedCams.push(cam.id));
     const camLinks = (r.cameras || []).map(cam => `[🎥 ${cam.title}](cam:${cam.id})`).join(', ');
+    const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ' กรุงเทพมหานคร')}`;
 
     reply += `**${idx + 1}. 🔴 ${r.name}**\n`;
     reply += `- **สถานะบนแผนที่**: เส้นสีแดงติดขัด **${c.share.jam}%** · ชะลอตัว ${c.share.slow}% · คล่องตัว ${c.share.flowing}%\n`;
@@ -558,6 +562,7 @@ function evaluateMapRedRoutes(query, ctx) {
     if (corridor && corridor.bypassTips.length > 0) {
       reply += `- 💡 **ทางเลี่ยงที่แนะนำ**: ${corridor.bypassTips[0]}\n`;
     }
+    reply += `- 🗺️ **Google Maps**: [📍 ตรวจสอบสภาพจราจรบน Google Maps](${gmapsUrl})\n`;
     reply += `\n`;
   });
 
@@ -950,12 +955,13 @@ ${ctx.busyCams.slice(0, 5).map(d => {
 - ฝั่งธนบุรี ➔ ใจกลางเมือง: ราชพฤกษ์/กัลปพฤกษ์ ➔ สาทร/สีลม (เทียบสะพานตากสิน vs สะพานพระราม 3 ➔ ถ.นราธิวาสฯ)
 - เหนือ ➔ ตะวันออกเฉียงเหนือ: วงศ์สว่าง/ประชานุกูล ➔ ลำลูกกา/พหลโยธิน
 - ตะวันออก ➔ ตะวันตกเฉียงใต้: บางนา-ตราด ➔ พระราม 2 (เทียบสะพานพระราม 9 vs สะพานกาญจนาภิเษกวงแหวนใต้)
-หากผู้ใช้ถามเรื่องการเดินทาง นำทาง หรือหาทางเลี่ยง ให้เปรียบเทียบ 2 เส้นทาง ระบุข้อดี/ข้อเสีย จุดคอขวดที่ต้องเลี่ยง พร้อมใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) ให้ตรวจเช็คสภาพจริงเสมอ
+หากผู้ใช้ถามเรื่องการเดินทาง นำทาง หรือหาทางเลี่ยง ให้เปรียบเทียบ 2 เส้นทาง ระบุข้อดี/ข้อเสีย จุดคอขวดที่ต้องเลี่ยง พร้อมใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) และแนบลิงก์เปิดนำทางบน Google Maps ในรูปแบบ [📍 เปิดนำทางบน Google Maps](https://www.google.com/maps/dir/?api=1&origin=ต้นทาง&destination=ปลายทาง&travelmode=driving) เสมอ
 
 คำแนะนำการตอบ:
 1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น ตรวจสอบจุดเริ่มต้นและปลายทางให้ถูกต้อง 100% เสมอ
 2. เมื่อกล่าวถึงกล้องใดๆ ให้ใส่ลิงก์ในรูปแบบ [🎥 ชื่อกล้อง](cam:CAM_ID) เพื่อให้ผู้ใช้กดดูภาพสดได้ทันที
-3. วิเคราะห์ทั้งด้านข้อมูลเส้นสีบนแผนที่, ปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
+3. เมื่อแนะนำเส้นทาง ให้แนบลิงก์ Google Maps Navigation ในรูปแบบ [📍 เปิดนำทางบน Google Maps](https://www.google.com/maps/dir/?api=1&origin=...&destination=...&travelmode=driving) เพื่อให้ผู้ใช้กดเปิดนำทางจริงได้ทันที
+4. วิเคราะห์ทั้งด้านข้อมูลเส้นสีบนแผนที่, ปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
 `;
 
   const contents = [];
