@@ -166,6 +166,24 @@ const ROUTE_PRESETS = [
       via: 'ขึ้นทางคู่ขนานลอยฟ้าบรมราชชนนี ➔ เชื่อมต่อทางพิเศษประจิมรัถยา ข้ามสะพานพระราม 7 เข้าสู่จตุจักร/พระราม 9'
     },
     tip: 'ใช้คู่ขนานลอยฟ้าบรมราชชนนีเพื่อข้ามแยกสาย 2 สาย 3 และเลี่ยงไฟแดงตลอดสาย'
+  },
+  {
+    id: 'rama2_rama7',
+    name: 'พระราม 2 / บางปะกอก ➔ มจพ. พระนครเหนือ / พระราม 7 / วงศ์สว่าง',
+    origins: ['พระราม2', 'พระรามสอง', 'บางปะกอก', 'สุขสวัสดิ์', 'ดาวคะนอง', 'จอมทอง', 'บางขุนเทียน', 'แสมดำ', 'มหาชัย', 'สมุทรสาคร'],
+    dests: ['พระราม7', 'พระรามเจ็ด', 'พระนครเหนือ', 'มจพ', 'มจพ.', 'วงศ์สว่าง', 'พิบูลสงคราม', 'บางซื่อ', 'สะพานพระราม7'],
+    match: ['พระราม2', 'พระรามสอง', 'พระราม7', 'พระรามเจ็ด', 'พระนครเหนือ', 'มจพ', 'วงศ์สว่าง', 'พิบูลสงคราม'],
+    primary: {
+      name: 'ทางพิเศษเฉลิมมหานคร ➔ ทางด่วนศรีรัช (ลงด่านสะพานพระราม 7 / ด่านประชานุกูล)',
+      cams: ['ITICM_BMAMI0293', 'ITICM_BMAMI0213', 'ITICM_BMAMI0165'],
+      via: 'ถ.พระราม 2 ➔ ขึ้นทางด่วนเฉลิมมหานคร ด่านดาวคะนอง (ข้ามสะพานพระราม 9 หรือสะพานทศมราชัน) ➔ เข้าทางพิเศษศรีรัช มุ่งหน้าแจ้งวัฒนะ ➔ ลงด่านสะพานพระราม 7 หรือ ด่านรัชดาภิเษก/ประชานุกูล ➔ ถ.วงศ์สว่าง ➔ มหาวิทยาลัยเทคโนโลยีพระจอมเกล้าพระนครเหนือ (มจพ.)'
+    },
+    bypass: {
+      name: 'ทางเลี่ยงฝั่งธนบุรี (ถ.ราชพฤกษ์ ➔ ถ.นครอินทร์ ➔ ข้ามสะพานพระราม 5)',
+      cams: ['ITICM_BMAMI0292', 'DOH-PER-3-006', 'ITICM_BMAMI0166'],
+      via: 'ถ.พระราม 2 ➔ เลี้ยวเข้า ถ.ราชพฤกษ์ (ต่างระดับบางขุนเทียน) ➔ ตรงยาวข้ามบรมราชชนนีสู่ ถ.นครอินทร์ (วงเวียนพระราม 5) ➔ ข้ามสะพานพระราม 5 ➔ แยกพิบูลสงคราม เลี้ยวเข้า ถ.พิบูลสงคราม ➔ มจพ. พระนครเหนือ (ฟรีค่าทางด่วนและเลี่ยงรถติดสะพานพระราม 9)'
+    },
+    tip: 'ช่วงเวลาเร่งด่วนสะพานพระราม 9 มักมีท้ายแถวยาวสะสม การใช้ทางเลี่ยง ถ.ราชพฤกษ์-นครอินทร์ ข้ามสะพานพระราม 5 จะลื่นไหลกว่ามากและไม่ต้องเสียค่าผ่านทางพิเศษ'
   }
 ];
 
@@ -211,12 +229,15 @@ function evaluateLeg(camIds, ctx) {
   };
 }
 
-function evaluateRoutePreset(preset, ctx) {
+function evaluateRoutePreset(preset, ctx, parsed) {
   const relatedCams = [...preset.primary.cams, ...preset.bypass.cams];
   const priEval = evaluateLeg(preset.primary.cams, ctx);
   const bypEval = evaluateLeg(preset.bypass.cams, ctx);
 
   let reply = `### 🗺️ แผนที่นำทางและทางเลี่ยง: **${preset.name}**\n\n`;
+  if (parsed && parsed.origin && parsed.dest) {
+    reply += `📍 **คำขอเส้นทาง**: จาก **${parsed.origin}** ไปยัง **${parsed.dest}**\n\n`;
+  }
 
   reply += `#### 1. เส้นทางหลัก: **${preset.primary.name}**\n`;
   reply += `- **สถานะปัจจุบัน**: **${priEval.statusText}**\n`;
@@ -246,8 +267,101 @@ function evaluateRoutePreset(preset, ctx) {
   return { reply, relatedCams };
 }
 
+/**
+ * Parses user input to extract Origin and Destination.
+ * Example: "ช่วยแนะนำจากพระราม 2 ไป มหาลัยพระนครเหนือตรงพระราม 7 ให้หน่อย"
+ * -> { origin: 'พระราม 2', dest: 'มหาลัยพระนครเหนือตรงพระราม 7' }
+ */
+function parseOriginDest(query) {
+  if (!query) return null;
+  const raw = query.trim();
+
+  // Pattern 1: จาก... (ไปที่|ไปถึง|ไปยัง|ไป|ถึง|มุ่งหน้า)...
+  let m = raw.match(/จาก\s*(.+?)\s*(?:ไปที่|ไปถึง|ไปยัง|ไป|ถึง|มุ่งหน้า)\s*(.+?)(?:ให้หน่อย|หน่อย|ทางไหนดี|ทางไหน|ดีไหม|ดีกว่า|ดี|ครับ|ค่ะ|นะ|\?|$)/i);
+  if (!m) {
+    // Pattern 2: [Start] (ไปที่|ไปถึง|ไปยัง|ไป) [End]
+    m = raw.match(/([ก-๙a-zA-Z0-9\s.-]+?)\s*(?:ไปที่|ไปถึง|ไปยัง|ไป|มุ่งหน้า)\s*([ก-๙a-zA-Z0-9\s.-]+?)(?:ให้หน่อย|หน่อย|ทางไหนดี|ทางไหน|ดีไหม|ดีกว่า|ดี|ครับ|ค่ะ|นะ|\?|$)/i);
+  }
+
+  if (m) {
+    let origin = m[1].replace(/^(ช่วยแนะนำ|ช่วยดู|แนะนำ|บอก|ขอเส้นทาง|เส้นทาง|เดินทางจาก|เริ่มจาก|ขับรถจาก|ออกเดินทางจาก)\s*/i, '').trim();
+    let dest = m[2].replace(/(?:ไปทางไหนดี|ไปทางไหน|ทางไหนดี|ทางไหน|เลี่ยงรถติด|เลี่ยงติด|เลี่ยง|ดีไหม|ดีกว่า|ดี|ให้หน่อย|หน่อย|ครับ|ค่ะ|นะ|มุ่งหน้า|ไป|\?|\s)+$/gi, '').trim();
+
+    origin = origin.replace(/^[,\s-]+|[,\s-]+$/g, '');
+    dest = dest.replace(/^[,\s-]+|[,\s-]+$/g, '');
+
+    if (origin && dest && origin !== dest) {
+      return { origin, dest };
+    }
+  }
+  return null;
+}
+
+/**
+ * Fallback route evaluator for arbitrary Origin-Destination pairs
+ */
+function evaluateDynamicRoute(origin, dest, ctx) {
+  const normO = origin.replace(/\s+/g, '').toLowerCase();
+  const normD = dest.replace(/\s+/g, '').toLowerCase();
+  const relatedCams = [];
+
+  // Find cameras matching origin or destination
+  const oCams = ctx.cams.filter(c => {
+    const t = c.title.toLowerCase().replace(/\s+/g, '');
+    return t.includes(normO) || normO.includes(t);
+  });
+  const dCams = ctx.cams.filter(c => {
+    const t = c.title.toLowerCase().replace(/\s+/g, '');
+    return t.includes(normD) || normD.includes(t);
+  });
+
+  oCams.forEach(c => { if (!relatedCams.includes(c.id)) relatedCams.push(c.id); });
+  dCams.forEach(c => { if (!relatedCams.includes(c.id)) relatedCams.push(c.id); });
+
+  const allRouteCams = [...oCams, ...dCams];
+
+  let reply = `### 🗺️ แนะนำแนวเส้นทางและการหลีกเลี่ยงรถติด: **${origin} ➔ ${dest}**\n\n`;
+  reply += `📍 **คำขอเส้นทาง**: จาก **${origin}** มุ่งหน้า **${dest}**\n`;
+  reply += `ระบบประมวลผลโครงข่ายจราจรกรุงเทพฯ แบบไดนามิก (ดัชนีภาพรวม กทม.: **${ctx.trafficIndex}**):\n\n`;
+
+  reply += `#### 1. เส้นทางหลัก (ทางด่วน/ทางพิเศษยกระดับ):\n`;
+  reply += `- **แนวเส้นทาง**: จาก **${origin}** มุ่งหน้าขึ้นโครงข่ายทางพิเศษหรือทางยกระดับที่ใกล้ที่สุด (เช่น ทางด่วนเฉลิมมหานคร, ทางด่วนศรีรัช, หรือทางยกระดับอุตราภิมุข) ต่อเนื่องไปยังจุดลงทางด่วนในเขต **${dest}**\n`;
+  reply += `- **จุดเด่น**: ประหยัดเวลา เลี่ยงสัญญาณไฟจราจรระดับพื้นราบและจุดตัดแยกสำคัญ\n\n`;
+
+  reply += `#### 2. เส้นทางเลี่ยง (Bypass / โครงข่ายถนนสายรองและวงแหวน):\n`;
+  reply += `- **แนวเส้นทาง**: ใช้แนวถนนวงแหวนรอบนอกหรือถนนสายหลักคู่ขนาน (เช่น ถ.กาญจนาภิเษก, ถ.ราชพฤกษ์, ถ.นครอินทร์ หรือ ถ.วงแหวนอุตสาหกรรม) เลี่ยงใจกลางเมืองเข้าสู่ **${dest}**\n`;
+  reply += `- **จุดเด่น**: ไม่เสียค่าผ่านทางพิเศษ และช่วยเลี่ยงคอขวดสะพานข้ามแม่น้ำเจ้าพระยาช่วงชั่วโมงเร่งด่วน\n\n`;
+
+  if (allRouteCams.length > 0) {
+    reply += `#### 📹 จุดตรวจกล้องสดใกล้เคียงแนวเส้นทาง:\n`;
+    allRouteCams.slice(0, 4).forEach(c => {
+      reply += `- ${formatCamSummary(c.id, ctx)}\n`;
+    });
+    reply += `\n`;
+  }
+
+  reply += `#### 💡 คำแนะนำเพิ่มเติม:\n`;
+  const severeRoads = ctx.sortedRoads.filter(r => r.congestion && r.congestion.share.jam >= 20);
+  if (severeRoads.length > 0) {
+    reply += `> ⚠️ **จุดติดขัดที่ควรระวังในพื้นที่ใกล้เคียง**: ${severeRoads.slice(0, 2).map(r => `**${r.name}** (ติดขัดสะสม ${r.congestion.share.jam}%)`).join(', ')}\n`;
+  } else {
+    reply += `> 🟢 **สภาพการจราจรโดยรวม**: โครงข่ายหลักส่วนใหญ่เคลื่อนตัวได้ตามปกติ แนะนำตรวจเช็คกล้องสดก่อนออกเดินทาง\n`;
+  }
+
+  return { reply, relatedCams };
+}
+
 // --- Corridor Bypass Tips for Map Red Routes ---
 const CORRIDOR_MAP_BYPASSES = [
+  {
+    match: ['พระราม7', 'พระรามเจ็ด', 'พระนครเหนือ', 'มจพ', 'วงศ์สว่าง', 'พิบูลสงคราม'],
+    name: 'ย่าน มจพ. พระนครเหนือ - สะพานพระราม 7 - วงศ์สว่าง',
+    bypassTips: [
+      'ใช้ **ถ.พิบูลสงคราม ➔ ข้ามสะพานพระราม 5** เพื่อตัดออก ถ.นครอินทร์ / ถ.ราชพฤกษ์ เลี่ยงการข้ามสะพานพระราม 7 หรือแยกประชานุกูล',
+      'ใช้ **ทางพิเศษประจิมรัถยา (ด่วนศรีรัช-วงแหวนรอบนอก)** มุ่งหน้าตลิ่งชัน/กาญจนาภิเษก หรือเชื่อมต่อด่วนศรีรัชเข้าเมือง',
+      'เลี่ยงแยกวงศ์สว่างโดยใช้ทางเบี่ยงเลียบคลองประปา หรือ ถ.กรุงเทพ-นนทบุรี'
+    ]
+  },
   {
     match: ['ประชานุกูล', 'ประชาชื่น', 'วงศ์สว่าง', 'ประชานิเวศน์', 'รัชดา', 'รัชวิภา'],
     name: 'ย่านประชานุกูล - ประชาชื่น - วงศ์สว่าง',
@@ -415,24 +529,57 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
   const isNavQuery = q.includes('นำทาง') || q.includes('เส้นทาง') || q.includes('ทางเลี่ยง') ||
                      q.includes('เลี่ยง') || q.includes('ไปทางไหน') || q.includes('เดินทาง') ||
                      q.includes('route') || q.includes('bypass') ||
-                     (normQ.includes('จาก') && (normQ.includes('ไป') || normQ.includes('ถึง')));
+                     (normQ.includes('จาก') && (normQ.includes('ไป') || normQ.includes('ถึง'))) ||
+                     (q.includes('แนะนำ') && (q.includes('ไป') || q.includes('ถึง')));
 
   if (isNavQuery) {
+    const parsed = parseOriginDest(query);
     let matchedPreset = null;
+
     if (selectedCamId) {
       matchedPreset = ROUTE_PRESETS.find(preset =>
         preset.primary.cams.includes(selectedCamId) || preset.bypass.cams.includes(selectedCamId)
       );
     }
-    if (!matchedPreset) {
+
+    if (!matchedPreset && parsed) {
+      const normOrigin = parsed.origin.replace(/\s+/g, '').toLowerCase();
+      const normDest = parsed.dest.replace(/\s+/g, '').toLowerCase();
+
+      // STRICT: Both origin and destination must match the preset corridor
+      for (const preset of ROUTE_PRESETS) {
+        const oMatch = (preset.origins || []).some(o => {
+          const no = o.toLowerCase().replace(/\s+/g, '');
+          return normOrigin.includes(no) || no.includes(normOrigin);
+        });
+        const dMatch = (preset.dests || []).some(d => {
+          const nd = d.toLowerCase().replace(/\s+/g, '');
+          return normDest.includes(nd) || nd.includes(normDest);
+        });
+        if (oMatch && dMatch) {
+          matchedPreset = preset;
+          break;
+        }
+      }
+
+      // If origin & dest specified but no preset matched both, use dynamic routing fallback!
+      // NEVER guess a random mismatched preset!
+      if (!matchedPreset) {
+        return evaluateDynamicRoute(parsed.origin, parsed.dest, ctx);
+      }
+    }
+
+    if (!matchedPreset && !parsed) {
+      // General query without clear "from A to B" format
       let bestPreset = null;
       let maxScore = 0;
       ROUTE_PRESETS.forEach(preset => {
         let score = 0;
         const oHit = (preset.origins || []).some(o => normQ.includes(o.toLowerCase()));
         const dHit = (preset.dests || []).some(d => normQ.includes(d.toLowerCase()));
-        if (oHit) score += 3;
-        if (dHit) score += 3;
+        if (oHit && dHit) {
+          score += 10;
+        }
         const kwHits = (preset.match || []).filter(m => normQ.includes(m.toLowerCase())).length;
         score += kwHits;
 
@@ -441,13 +588,14 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
           bestPreset = preset;
         }
       });
-      if (maxScore >= 4 || (maxScore >= 2 && (normQ.includes('ไป') || normQ.includes('เลี่ยง') || normQ.includes('ทาง') || normQ.includes('นำทาง')))) {
+      // Only match if high confidence (e.g. both origin and destination keywords exist or multiple hits)
+      if (maxScore >= 10 || (maxScore >= 3 && (normQ.includes('ทางเลี่ยง') || normQ.includes('นำทาง')))) {
         matchedPreset = bestPreset;
       }
     }
 
     if (matchedPreset) {
-      return evaluateRoutePreset(matchedPreset, ctx);
+      return evaluateRoutePreset(matchedPreset, ctx, parsed);
     }
 
     // If specific camera requested bypass
@@ -731,15 +879,17 @@ ${ctx.busyCams.slice(0, 5).map(d => {
 - ผู้ใช้สามารถถามให้จับจากแผนที่แทนกล้องได้ และคุณสามารถตอบได้อย่างมั่นใจว่าระบบรองรับการตรวจจับจากแผนที่โดยตรง 100%
 
 [ความสามารถในการนำทางและเสนอเส้นทางเลี่ยง (Navigation & Bypass AI)]:
-คุณสามารถวางแผนเส้นทางและเสนอทางเลี่ยงรถติดได้อย่างแม่นยำ โดยเปรียบเทียบระหว่างเส้นทางหลักและทางเลี่ยงจากข้อมูลภาพกล้อง CCTV สด, ความเร็วพื้นที่จริง (px/s), สัดส่วนรถจอดนิ่ง (%), และ Longdo Index:
+คุณสามารถวางแผนเส้นทางและเสนอทางเลี่ยงรถติดได้อย่างแม่นยำ โดยวิเคราะห์ทิศทางการเดินทาง (จุดต้นทาง Origin และปลายทาง Destination) ให้ถูกต้องตรงตามคำถามของผู้ใช้เสมอ (ห้ามสลับทิศทางหรือนำทางในทิศทางที่ไม่ตรงกับที่ถามมาตอบ):
+- ตะวันตกเฉียงใต้ ➔ เหนือ/นนทบุรี: พระราม 2 / บางปะกอก ➔ มจพ. พระนครเหนือ / พระราม 7 / วงศ์สว่าง (เทียบทางด่วนเฉลิมมหานคร ข้ามสะพานพระราม 9 ➔ ด่วนศรีรัช ลงด่านพระราม 7 vs ทางเลี่ยงฝั่งธนบุรี ถ.ราชพฤกษ์ ➔ ถ.นครอินทร์ ➔ ข้ามสะพานพระราม 5 ไม่เสียค่าทางด่วน)
 - เหนือ ➔ ใจกลางเมือง: ดอนเมือง/วิภาวดี ➔ สาทร/สีลม (เทียบทางด่วนเฉลิมมหานคร vs ทางด่วนศรีรัช)
 - ตะวันตก ➔ ใจกลางเมือง: บางใหญ่/กาญจนาภิเษก ➔ อโศก/พระราม 4 (เทียบรัตนาธิเบศร์-แคราย vs ทางด่วนประจิมรัถยา-พระราม 7)
+- ฝั่งธนบุรี ➔ ใจกลางเมือง: ราชพฤกษ์/กัลปพฤกษ์ ➔ สาทร/สีลม (เทียบสะพานตากสิน vs สะพานพระราม 3 ➔ ถ.นราธิวาสฯ)
 - เหนือ ➔ ตะวันออกเฉียงเหนือ: วงศ์สว่าง/ประชานุกูล ➔ ลำลูกกา/พหลโยธิน
 - ตะวันออก ➔ ตะวันตกเฉียงใต้: บางนา-ตราด ➔ พระราม 2 (เทียบสะพานพระราม 9 vs สะพานกาญจนาภิเษกวงแหวนใต้)
 หากผู้ใช้ถามเรื่องการเดินทาง นำทาง หรือหาทางเลี่ยง ให้เปรียบเทียบ 2 เส้นทาง ระบุข้อดี/ข้อเสีย จุดคอขวดที่ต้องเลี่ยง พร้อมใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) ให้ตรวจเช็คสภาพจริงเสมอ
 
 คำแนะนำการตอบ:
-1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น
+1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น ตรวจสอบจุดเริ่มต้นและปลายทางให้ถูกต้อง 100% เสมอ
 2. เมื่อกล่าวถึงกล้องใดๆ ให้ใส่ลิงก์ในรูปแบบ [🎥 ชื่อกล้อง](cam:CAM_ID) เพื่อให้ผู้ใช้กดดูภาพสดได้ทันที
 3. วิเคราะห์ทั้งด้านข้อมูลเส้นสีบนแผนที่, ปริมาณรถ, ความเร็วพื้นที่จริง, การนำทางเลี่ยงรถติด, และการบริหารจัดการสัญญาณไฟจราจร
 `;

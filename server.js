@@ -255,11 +255,37 @@ function listRecordings(forceFresh = false) {
     // Only the newest day's list travels. A day is at most 144 clips a camera,
     // and every viewer asks for this every thirty seconds.
     const clips = byDay.get(newest).map(f => `${newest}/${f}`);
+
+    // Parse latest vehicle counts from <newest>.csv in Drive D if available
+    let lastCount = null;
+    try {
+      const csvPath = path.join(dir, `${newest}.csv`);
+      if (fs.existsSync(csvPath)) {
+        const lines = fs.readFileSync(csvPath, 'utf8').trim().split('\n');
+        if (lines.length > 1) {
+          const row = lines[lines.length - 1].split(',');
+          if (row.length >= 6) {
+            lastCount = {
+              at: row[0],
+              total: Number(row[1]) || 0,
+              counts: {
+                car: Number(row[2]) || 0,
+                motorcycle: Number(row[3]) || 0,
+                bus: Number(row[4]) || 0,
+                truck: Number(row[5]) || 0
+              }
+            };
+          }
+        }
+      }
+    } catch (e) {}
+
     out.push({
       id: entry.name,
       day: newest,
       clips,
       latest: clips[clips.length - 1],
+      lastCount,
       days: dayNames.map(d => ({ day: d, clips: byDay.get(d).length }))
         .sort((a, b) => a.day < b.day ? 1 : -1)
     });
