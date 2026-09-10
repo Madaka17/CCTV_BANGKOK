@@ -14,3 +14,4 @@ tunnel/current-url.txt
 
 # Detached server and detector, started with output redirected to files
 *.log
+start-agy*.bat
