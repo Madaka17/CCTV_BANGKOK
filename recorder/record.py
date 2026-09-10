@@ -43,6 +43,13 @@ from detect import MOTORCYCLE_CONF, detect, grab_frame, predict  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
+# How many frames to spend fading from one sample into the next. Four at ten a
+# second is a bit under half a second of change per gap, which is enough for
+# the eye to follow the traffic moving rather than see it teleport. It costs
+# file size in proportion: a day goes from 144 frames to 144 x 5.
+BLEND_FRAMES = 4
+
+
 def human(n):
     return f"{n/1024/1024:.1f} MB" if n >= 1024 * 1024 else f"{n/1024:.0f} KB"
 
@@ -53,7 +60,7 @@ def cameras(site):
     return data if isinstance(data, list) else (data.get("cameras") or data.get("list") or [])
 
 
-def capture(cam, out_dir, day, stamp, model, conf, imgsz):
+def capture(cam, out_dir, day, model, conf, imgsz):
     """One frame, with what was on the road drawn onto it.
 
     The boxes are burnt into the stored frame rather than kept beside it. The
@@ -71,6 +78,12 @@ def capture(cam, out_dir, day, stamp, model, conf, imgsz):
     except Exception as exc:
         return cam["id"], f"detect: {str(exc)[:50]}", None
 
+    # Named for when this camera was actually read, not for when the round
+    # began. Eight threads work through 29 cameras over a couple of minutes, so
+    # one shared stamp told every frame in a round it was taken at the same
+    # moment - and the order they were really taken in was lost with it. That
+    # is what made the playback jump backwards.
+    stamp = datetime.now(timezone.utc).strftime("%H-%M-%S")
     folder = os.path.join(out_dir, cam["id"], day)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, f"{stamp}.jpg"), "wb") as fh:
@@ -139,14 +152,28 @@ def stitch(cam_dir, day, fps, drop_frames):
         return None
 
     written = 0
+    previous = None
     for name in shots:
         frame = cv2.imread(os.path.join(folder, name))
         if frame is None:
             continue
         if frame.shape[:2] != (height, width):
             frame = cv2.resize(frame, (width, height))
+
+        # Ten minutes between frames is a hard cut every time - the traffic is
+        # simply somewhere else - and a run of hard cuts is what reads as the
+        # picture jumping about. Fading from one into the next spends a few
+        # frames on the change instead of none, which is all a timelapse can
+        # do about a gap it cannot fill.
+        if previous is not None:
+            for step in range(1, BLEND_FRAMES + 1):
+                a = step / (BLEND_FRAMES + 1)
+                writer.write(cv2.addWeighted(previous, 1 - a, frame, a, 0))
+                written += 1
+
         writer.write(frame)
         written += 1
+        previous = frame
     writer.release()
 
     if not written:
@@ -266,7 +293,7 @@ def main():
     while True:
         started = time.time()
         now = datetime.now(timezone.utc)
-        day, stamp = now.strftime("%Y-%m-%d"), now.strftime("%H-%M-%S")
+        day = now.strftime("%Y-%m-%d")
 
         try:
             found = cameras(args.site)
@@ -276,7 +303,7 @@ def main():
             continue
 
         results = list(pool.map(
-            lambda c: capture(c, args.out, day, stamp, model, args.conf, args.imgsz),
+            lambda c: capture(c, args.out, day, model, args.conf, args.imgsz),
             found))
         saved = [r for r in results if r[1] is None]
         vehicles = 0
