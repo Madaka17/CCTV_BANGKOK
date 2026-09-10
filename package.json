@@ -1,14 +1,13 @@
 {
   "name": "bangkok-traffic-live",
   "version": "1.0.0",
-  "description": "Live Bangkok traffic video and road conditions",
+  "description": "Bangkok traffic cameras from Longdo, with vehicle detection",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "share": "node tunnel/share.js",
     "share:ts": "tailscale funnel --bg 3000",
-    "py": "python3 server.py",
     "log:traffic": "node logger/log-traffic.js",
     "log:once": "node logger/log-traffic.js --once",
     "record": "detector/.venv/Scripts/python.exe recorder/record.py",
@@ -16,11 +15,11 @@
   },
   "keywords": [
     "cctv",
-    "bma",
     "bangkok",
     "traffic",
-    "mjpeg",
-    "dashboard"
+    "longdo",
+    "hls",
+    "yolo"
   ],
   "author": "Antigravity",
   "license": "MIT",
