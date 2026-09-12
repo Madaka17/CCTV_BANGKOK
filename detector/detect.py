@@ -684,17 +684,33 @@ def analyse_clip(model, confidence, imgsz, mp4, out):
                 "w": round((x2 - x1) / width, 3), "h": round((y2 - y1) / height, 3),
             })
         frames.append({"t": round(i / fps, 2), "total": len(boxes), "counts": counts, "boxes": boxes})
+        # A clip takes a minute or two to get through. Publish what is done so
+        # far every few frames, so the page has boxes for the start of the clip
+        # while the rest is still being worked on.
+        if len(frames) % 10 == 0:
+            write_json(out + ".partial", {
+                "status": "partial", "step": CLIP_STEP, "duration": round(total / fps, 1),
+                "frames": frames,
+            })
     cap.release()
     data = {
         "status": "done", "model": state["model"], "step": CLIP_STEP,
         "duration": round(total / fps, 1), "frames": frames,
         "ms": int((time.time() - started) * 1000),
     }
-    tmp = out + ".tmp"
+    write_json(out, data)
+    try:
+        os.remove(out + ".partial")
+    except OSError:
+        pass
+    return data
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, separators=(",", ":"))
-    os.replace(tmp, out)
-    return data
+    os.replace(tmp, path)
 
 
 def clip_worker(model_box, confidence, imgsz):
@@ -915,6 +931,13 @@ class Handler(BaseHTTPRequestHandler):
                     clip_pending.add((cam_id, clip))
                     clip_queue.put((cam_id, clip))
                 queued = len(clip_pending)
+            if os.path.exists(out + ".partial"):
+                try:
+                    with open(out + ".partial", "rb") as f:
+                        self._send(200, f.read(), "application/json")
+                    return
+                except OSError:
+                    pass
             self._json(200, {"status": "pending", "queued": queued})
             return
 

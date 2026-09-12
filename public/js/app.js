@@ -644,6 +644,7 @@ function bindDashVideo(cam, video) {
 // The detector answers "pending" until it has been through the clip once, and
 // "off" when it is not running at all. Poll gently: a clip lasts ten minutes.
 function loadClipBoxes(camId, clip, video, attempt = 0) {
+  const draw = () => (video._drawClip ? video._drawClip() : drawClipFrame(camId, video));
   fetch(`/api/recording-boxes/${encodeURIComponent(camId)}/${clip}`)
     .then(r => r.json())
     .then(data => {
@@ -651,62 +652,69 @@ function loadClipBoxes(camId, clip, video, attempt = 0) {
       if (data.status === 'done') {
         video._boxes = data.frames || [];
         video._boxStatus = 'done';
-        drawClipFrame(camId, video);
+        draw();
         return;
       }
-      video._boxStatus = data.enabled === false ? 'off' : 'pending';
-      drawClipFrame(camId, video);
+      // Partial: the start of the clip is boxed, the rest is still being worked on
+      if (data.status === 'partial' && data.frames) video._boxes = data.frames;
+      video._boxStatus = data.enabled === false ? 'off' : (data.status === 'partial' ? 'partial' : 'pending');
+      draw();
       if (attempt >= 90) return;
-      const wait = video._boxStatus === 'off' ? 30000 : 10000;
+      const wait = video._boxStatus === 'off' ? 30000 : (video._boxStatus === 'partial' ? 5000 : 10000);
       setTimeout(() => loadClipBoxes(camId, clip, video, attempt + 1), wait);
     })
     .catch(() => {
       if (video.dataset.clip !== clip) return;
       video._boxStatus = 'off';
-      drawClipFrame(camId, video);
+      draw();
       if (attempt < 90) setTimeout(() => loadClipBoxes(camId, clip, video, attempt + 1), 30000);
     });
 }
 
 const CLIP_BADGE = 'position:absolute;bottom:8px;left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.85);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;pointer-events:none';
 
-function drawClipFrame(camId, video) {
-  const overlay = el('do-' + cssId(camId));
+// Boxes are only drawn in the detail view; the dashboard wall shows the count
+// alone so the picture stays clean until someone opens the camera.
+function drawClipFrame(camId, video, overlay = el('do-' + cssId(camId)), withBoxes = false) {
   if (!overlay) return;
   const frames = video._boxes;
-  if (!frames) {
-    const text = video._boxStatus === 'off'
+  const t = video.currentTime || 0;
+  const waiting = `<div style="${CLIP_BADGE};color:#cbd5e1">${video._boxStatus === 'off'
       ? 'YOLO ไม่ทำงาน (npm run detect)'
-      : 'กำลังวิเคราะห์คลิปด้วย YOLO11x...';
-    overlay.innerHTML = `<div style="${CLIP_BADGE};color:#cbd5e1">${text}</div>`;
-    return;
-  }
+      : 'กำลังวิเคราะห์คลิปด้วย YOLO11x...'}</div>`;
+  if (!frames) { overlay.innerHTML = waiting; return; }
   if (!frames.length) { overlay.innerHTML = ''; return; }
 
   // Last sampled frame at or before the playhead
-  const t = video.currentTime || 0;
   let lo = 0, hi = frames.length - 1, idx = 0;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     if (frames[mid].t <= t) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
   }
   const f = frames[idx];
+  // A partial result that has not reached the playhead yet
+  if (video._boxStatus !== 'done' && t - f.t > 8) { overlay.innerHTML = waiting; return; }
   const r = pictureRect(video);
   const parts = Object.entries(f.counts || {})
     .filter(([_, n]) => n > 0)
     .map(([k, n]) => `${LABELS[k] || k} ${n}`)
     .join(' · ');
 
-  overlay.innerHTML = `
+  const svg = !withBoxes ? '' : `
     <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" preserveAspectRatio="none">
       ${f.boxes.map(b => {
         const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
         const w = b.w * r.w, h = b.h * r.h;
         const c = BOX_COLOURS[b.k] || '#54C00C';
-        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="none" stroke="${c}" stroke-width="2" rx="2" />`;
+        const label = LABELS[b.k] || b.k;
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="none" stroke="${c}" stroke-width="2" rx="2" />
+          <rect x="${x.toFixed(1)}" y="${Math.max(0, y - 15).toFixed(1)}" width="${(label.length * 7 + 10).toFixed(0)}" height="14" fill="rgba(15,23,42,0.85)" rx="3" />
+          <text x="${(x + 4).toFixed(1)}" y="${Math.max(10, y - 4).toFixed(1)}" fill="${c}" font-size="10" font-family="system-ui, sans-serif" font-weight="bold">${label}</text>`;
       }).join('')}
-    </svg>
-    <div style="${CLIP_BADGE}">
+    </svg>`;
+  const badgeBottom = overlay.id === 'detail-overlay' ? '48px' : '8px';
+  overlay.innerHTML = `${svg}
+    <div style="${CLIP_BADGE};bottom:${badgeBottom}">
       <span style="color:#38bdf8;font-weight:600">รถ ${f.total} คัน</span>
       ${parts ? `<span style="color:#94a3b8;font-size:10px">${parts}</span>` : ''}
     </div>`;
@@ -1141,7 +1149,10 @@ function drawBoxes(camId, overlay, video) {
 }
 
 function redrawAllBoxes() {
-  if (state.detail) {
+  if (state.detail && state.detailMode === 'rec') {
+    const v = el('detail-video');
+    if (v && v._drawClip) v._drawClip();
+  } else if (state.detail) {
     const detailMedia = (state.detailMode === 'det') ? el('detail-img') : el('detail-video');
     drawBoxes(state.detail.id, el('detail-overlay'), detailMedia);
   }
@@ -1245,7 +1256,10 @@ function closeDetail() {
   const video = el('detail-video');
   const hls = state.players.get('detail');
   if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
-  if (video) { video.onended = null; try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
+  if (video) {
+    video.onended = null; video.ontimeupdate = null; video._drawClip = null; delete video.dataset.clip;
+    try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {}
+  }
 
   state.detail = null;
   el('detail').classList.add('hidden');
@@ -1277,6 +1291,12 @@ function renderDetail(imageOnly = false) {
   const msg = el('detail-msg');
   const ov = el('detail-overlay');
   const reading = state.detections.get(cam.id);
+
+  if (state.detailMode !== 'rec') {
+    video.ontimeupdate = null;
+    video._drawClip = null;
+    delete video.dataset.clip;
+  }
 
   if (state.detailMode === 'det') {
     img.classList.remove('hidden');
@@ -1315,38 +1335,41 @@ function renderDetail(imageOnly = false) {
     } else {
       msg.textContent = '';
       const latestClip = clips[clips.length - 1];
-      const targetSrc = `/api/recording/${encodeURIComponent(cam.id)}/${latestClip}`;
+      // Boxes come from the clip itself (see loadClipBoxes), never from the
+      // live reading, which describes a different moment.
+      video._drawClip = () => drawClipFrame(cam.id, video, ov, state.showDetailOverlay);
+      const playDetailClip = (clip) => {
+        video.dataset.clip = clip;
+        video._boxes = null;
+        video._boxStatus = 'pending';
+        video.src = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
+        video.play().catch(() => {});
+        video._drawClip();
+        loadClipBoxes(cam.id, clip, video);
+      };
       video.muted = true;
       video.defaultMuted = true;
       video.playsInline = true;
-      if (!video.src.includes(targetSrc)) {
-        video.src = targetSrc;
-        video.play().catch(() => {});
+      if (video.dataset.clip !== latestClip || !video.src) {
+        playDetailClip(latestClip);
       } else if (video.paused) {
         video.play().catch(() => {});
       }
-      video.onloadeddata = () => drawBoxes(cam.id, ov, video);
-      video.onplaying = () => drawBoxes(cam.id, ov, video);
+      video.onloadeddata = video._drawClip;
+      video.ontimeupdate = video._drawClip;
       video.onended = async () => {
         await loadRecordings(true);
         const freshRec = state.recordings.get(cam.id);
         const freshClips = (freshRec && freshRec.clips) || [];
-        if (freshClips.length) {
-          const freshLatest = freshClips[freshClips.length - 1];
-          const newSrc = `/api/recording/${encodeURIComponent(cam.id)}/${freshLatest}`;
-          if (video.src.includes(newSrc)) {
-            video.currentTime = 0;
-            video.play().catch(() => {});
-          } else {
-            video.src = newSrc;
-            video.play().catch(() => {});
-          }
+        const freshLatest = freshClips[freshClips.length - 1];
+        if (freshLatest && freshLatest !== video.dataset.clip) {
+          playDetailClip(freshLatest);
         } else {
           video.currentTime = 0;
           video.play().catch(() => {});
         }
       };
-      drawBoxes(cam.id, ov, video);
+      video._drawClip();
     }
   } else {
     // live mode
@@ -1366,6 +1389,12 @@ function renderDetail(imageOnly = false) {
 
 function renderDetailCounts(cam, reading) {
   const box = el('detail-counts');
+  // Callers pass the old dark utility classes; map them onto the soft pills
+  const chip = (label, value, cls = '') => {
+    const tone = /rose/.test(cls) ? 'status-jam' : /amber/.test(cls) ? 'status-slow'
+      : /emerald/.test(cls) ? 'status-flowing' : 'status-neutral';
+    return `<span class="status-pill ${tone}"><span class="opacity-70">${escapeHtml(label)}</span> <span class="font-semibold">${escapeHtml(String(value))}</span></span>`;
+  };
   const age = el('detail-age');
   const note = el('detail-note');
 
@@ -1878,7 +1907,9 @@ function renderDashboard() {
       featuredContainer.querySelectorAll('[data-dash-cam]').forEach(card => {
         const open = () => {
           const cam = state.cameras.find(c => c.id === card.dataset.dashCam);
-          if (cam) openDetail(cam);
+          if (!cam) return;
+          state.detailMode = 'rec';
+          openDetail(cam);
         };
         card.addEventListener('click', open);
         card.addEventListener('keydown', e => {
