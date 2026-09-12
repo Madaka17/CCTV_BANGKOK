@@ -74,7 +74,7 @@ QUANTIZE = 16 if torch.cuda.is_available() else None
 # cameras: 15.5s one at a time, 6.8s with three or five. Eight was worse at
 # 11.8s - past a handful the streams start competing for the same bandwidth,
 # and the sweep already has to share it with whoever is watching a camera.
-SWEEP_WORKERS = 4
+SWEEP_WORKERS = 6
 
 state = {
     "detections": {},   # camid -> reading
@@ -129,7 +129,7 @@ def ensure_cameras(site):
 # not have one, and cost seconds per camera starting the process where opening
 # the stream here takes under half a second.
 
-STREAM_TIMEOUT_MS = 15000
+STREAM_TIMEOUT_MS = 8000
 # How often the camera list is re-read when sweeps are off. The catalogue is
 # cached for ten minutes upstream, so asking faster only repeats the answer.
 CATALOGUE_REFRESH = 300
@@ -217,10 +217,14 @@ def vehicle_boxes(result, confidence):
             yield cls, box
 
 
+model_lock = threading.Lock()
+
+
 def predict(model, frame, confidence, imgsz):
     """One pass, floored low enough that the per-class floors can still apply."""
-    return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
-                         augment=AUGMENT, quantize=QUANTIZE, verbose=False)[0]
+    with model_lock:
+        return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
+                             augment=AUGMENT, quantize=QUANTIZE, verbose=False)[0]
 
 
 def detect(model, frame, confidence, imgsz=1280):
@@ -465,12 +469,11 @@ def draw_tracks(frame, tracks, area_metrics=None):
         x1, y1, x2, y2 = t["bbox"]
         colour = TRACK_COLOURS[tid % len(TRACK_COLOURS)]
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-        spd = t.get("speed", 0.0)
-        label = f"#{tid} {t['name']} {spd:.0f}px/s"
+        label = f"#{tid} {t['name']}"
         cv2.rectangle(frame, (x1, y1 - 16), (x1 + 8 * len(label), y1), colour, -1)
         cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
-    status_str = f" · {area_metrics['status_th']} ({area_metrics['avg_px_s']} px/s)" if area_metrics else ""
+    status_str = f" · {area_metrics['status_th']}" if area_metrics else ""
     banner = f"{len(tracks)} vehicles{status_str}"
     cv2.rectangle(frame, (8, 8), (8 + 10 * len(banner), 34), (0, 0, 0), -1)
     cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
@@ -729,12 +732,12 @@ def loop(site, interval, confidence, weights, imgsz, model_box=None):
             sweep(model, state["cameras"], confidence, imgsz)
             state["sweeps"] += 1
 
-            seen = [d for d in state["detections"].values() if d["total"] is not None]
+            seen = [d for d in state["detections"].values() if d.get("total") is not None]
             print(
                 f"[{time.strftime('%H:%M:%S')}] sweep {state['sweeps']}: "
                 f"{len(seen)}/{len(state['cameras'])} cameras, "
-                f"{sum(d['total'] for d in seen)} vehicles, "
-                f"{time.time() - started:.0f}s",
+                f"{sum(d.get('total') or 0 for d in seen)} vehicles, "
+                f"{time.time() - started:.1f}s",
                 flush=True,
             )
         except Exception as exc:
@@ -742,15 +745,8 @@ def loop(site, interval, confidence, weights, imgsz, model_box=None):
             print("sweep failed:", exc, flush=True)
 
         # Pace by when the sweep started, so a slow one does not compound
-        wait = max(1, interval - (time.time() - started))
-        # While a camera is being watched, leave the bandwidth to it
-        while wait > 0:
-            step = min(2, wait)
-            time.sleep(step)
-            wait -= step
-            with lock:
-                if state["focus"]:
-                    wait = max(wait, 2)
+        wait = max(1.0, interval - (time.time() - started))
+        time.sleep(wait)
 
 
 # --- HTTP ------------------------------------------------------------------
@@ -836,7 +832,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--site", default="http://127.0.0.1:3000", help="where to read the camera list from")
     ap.add_argument("--port", type=int, default=5056)
-    ap.add_argument("--interval", type=int, default=0,
+    ap.add_argument("--interval", type=int, default=5,
                     help="seconds between all-camera sweeps; 0 disables them")
     # 0.25 was throwing away real vehicles: on a busy frame it found 7 of the
     # 15 a person can count. Below about 0.12 the misses turn into whole-bush

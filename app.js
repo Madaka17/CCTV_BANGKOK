@@ -9,15 +9,17 @@
 const state = {
   cameras: [],
   players: new Map(), // camera id -> Hls instance
-  view: 'cams',
+  view: 'dashboard',
   detections: new Map(), // camera id -> reading
   recordings: new Map(), // camera id -> what recorder/record.py has kept
-  showOverlay: localStorage.getItem('showOverlay') !== '0',
+  showGridOverlay: localStorage.getItem('showGridOverlay') === '1', // false by default: ในหน้าเมนูกล้องยังไม่ต้องขึ้นกรอบ
+  showDetailOverlay: localStorage.getItem('showDetailOverlay') !== '0', // true by default: พอกดเข้าไปดูถึงจะขึ้นกรอบ
   // Measured against these servers: eight parallel fetches shared 2.5 Mbps in
   // total, while the streams themselves run 0.3-6.8 Mbps each. Playing all
   // nineteen at once cannot work, so only a few run at a time.
   playing: [],        // camera ids, oldest first
   observer: null,
+  visibleCams: new Set(), // cards the observer currently reports on screen
   detail: null,       // camera open in the detail view
   detailMode: 'det',  // 'det' | 'live'
   detailTimer: null,
@@ -61,9 +63,11 @@ async function loadCameras() {
     fillOrgFilter();
     if (state.view === 'map') { addCameraMarkers(); } else { render(); }
     refreshFocusTarget();
+    clearAlert('cameras');
   } catch (err) {
     grid.innerHTML = '';
     setEmptyMessage(`โหลดรายการกล้องไม่สำเร็จ (${err.message})`);
+    setAlert('cameras', { level: 'error', title: 'โหลดรายการกล้องไม่สำเร็จ', message: err.message, hint: 'กดรีเฟรชเพื่อลองใหม่' });
   }
 }
 
@@ -98,7 +102,7 @@ function render() {
          data-search="${escapeHtml(((cam.title || '') + ' ' + (cam.org || '') + ' ' + cam.id).toLowerCase())}"
          data-org="${escapeHtml(cam.org || '')}"
          class="camera-card rounded-2xl overflow-hidden flex flex-col group relative">
-      <div class="relative bg-black aspect-video flex items-center justify-center">
+      <div class="relative bg-black aspect-video flex items-center justify-center cursor-pointer" data-detail="${escapeHtml(cam.id)}">
         <div id="rec-${cssId(cam.id)}" class="absolute inset-0"></div>
 
         <!-- Top Left: LIVE indicator tag -->
@@ -134,7 +138,7 @@ function render() {
           </button>
         </div>
 
-        <div id="o-${cssId(cam.id)}" class="absolute inset-0 pointer-events-none"></div>
+        <div id="o-${cssId(cam.id)}" class="absolute inset-0 pointer-events-none z-20"></div>
         <div id="m-${cssId(cam.id)}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 pointer-events-none"></div>
       </div>
 
@@ -183,9 +187,15 @@ function render() {
   grid.querySelectorAll('[data-fullscreen]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const slot = el('rec-' + btn.dataset.fullscreen);
-      if (!slot) return;
-      if (slot.requestFullscreen) slot.requestFullscreen();
+      const container = btn.closest('.relative');
+      if (!container) return;
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else if (container.requestFullscreen) {
+        container.requestFullscreen().catch(() => {});
+      } else if (container.webkitRequestFullscreen) {
+        container.webkitRequestFullscreen();
+      }
     });
   });
 
@@ -193,7 +203,9 @@ function render() {
   paintCardCounts();
   paintTrafficBadges();
   updateWatchlistBadges();
+  observeCards();
   state.cameras.forEach(paintRecording);
+  renderDashboard();
 }
 
 // Camera ids contain characters that are awkward in selectors
@@ -212,6 +224,10 @@ function attachPlayer(cam, prefix = 'v-') {
   const msg = prefix === 'v-' ? el('m-' + cssId(cam.id)) : null;
   if (!video) return;
   const key = prefix === 'v-' ? cam.id : 'popup:' + cam.id;
+
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
 
   const say = (text) => { if (msg) msg.textContent = text; };
   video.addEventListener('playing', () => {
@@ -246,6 +262,12 @@ function attachPlayer(cam, prefix = 'v-') {
   hls.loadSource(cam.hls);
   hls.attachMedia(video);
 
+  hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+    clearAlert('cam:' + cam.id);
+    video.muted = true;
+    video.play().catch(() => say('แตะเพื่อเล่น'));
+  });
+
   hls.on(window.Hls.Events.ERROR, (_e, data) => {
     if (!data.fatal) return;
     // A live camera dropping out is ordinary; reconnect rather than give up
@@ -258,6 +280,7 @@ function attachPlayer(cam, prefix = 'v-') {
       say('กล้องนี้ไม่พร้อมใช้งาน');
       hls.destroy();
       state.players.delete(key);
+      setAlert('cam:' + cam.id, { level: 'warn', title: 'กล้องไม่พร้อมใช้งาน', message: cam.name || cam.id });
     }
   });
 
@@ -399,13 +422,13 @@ function paintTrafficBadges() {
     if (det && det.area_speed && det.area_speed.status) {
       const spd = det.area_speed;
       if (spd.status === 'jam') {
-        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shadow-sm shadow-rose-600/50 flex items-center gap-1" title="วิดีโอ AI ตรวจจับ: ติดขัดสะสม ${spd.stopped_pct}% จอดนิ่ง"><span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>ติดขัด AI (${spd.avg_px_s} px/s)</span>`;
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shadow-sm shadow-rose-600/50 flex items-center gap-1" title="วิดีโอ AI ตรวจจับ: ติดขัดสะสม ${spd.stopped_pct}% จอดนิ่ง"><span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>ติดขัด AI</span>`;
         return;
       } else if (spd.status === 'slow') {
-        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50" title="วิดีโอ AI ตรวจจับ: ชะลอตัว">ชะลอตัว AI (${spd.avg_px_s} px/s)</span>`;
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900 shadow-sm shadow-amber-500/50" title="วิดีโอ AI ตรวจจับ: ชะลอตัว">ชะลอตัว AI</span>`;
         return;
       } else if (spd.status === 'flowing') {
-        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50" title="วิดีโอ AI ตรวจจับ: คล่องตัว">คล่องตัว AI (${spd.avg_px_s} px/s)</span>`;
+        slot.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-500/50" title="วิดีโอ AI ตรวจจับ: คล่องตัว">คล่องตัว AI</span>`;
         return;
       }
     }
@@ -523,13 +546,24 @@ async function loadRecordings(forceFresh = false) {
     state.recordings = new Map((data.cameras || []).map(c => [c.id, c]));
     showRecorderNotice(!data.recording);
     state.cameras.forEach(paintRecording);
+    clearAlert('recordings-api');
   } catch (err) {
-    /* recorder not running; the cards say so */
+    setAlert('recordings-api', { level: 'error', title: 'อ่านรายการคลิปไม่ได้', message: err.message });
   }
 }
 
 function formatClipTime(clip) {
   if (!clip) return '';
+  const parts = clip.split('/');
+  if (parts.length === 2) {
+    const [datePart, timePart] = parts;
+    const timeClean = timePart.replace(/\.mp4$/i, '');
+    const [h, m, s] = timeClean.split('-').map(Number);
+    if (!isNaN(h) && !isNaN(m)) {
+      const d = new Date(Date.UTC(2026, 8, 11, h, m, s || 0));
+      return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    }
+  }
   const part = clip.includes('/') ? clip.split('/')[1] : clip;
   return part.replace(/\.mp4$/i, '').replace(/-/g, ':');
 }
@@ -538,18 +572,39 @@ function paintRecording(cam) {
   const slot = el('rec-' + cssId(cam.id));
   if (!slot) return;
   const rec = state.recordings.get(cam.id);
+  const clips = (rec && rec.clips) || [];
+  const isWriting = rec && rec.isWriting;
 
-  if (!rec) {
-    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีคลิปที่บันทึกไว้</div>';
+  // Fallback: If no recorded clips exist at all on Drive D for this camera,
+  // show the live image snapshot from the AI detector.
+  if (!rec || !clips.length) {
+    const liveSrc = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
+    const badgeText = isWriting ? 'กำลังบันทึกคลิปแรก...' : 'สด (Live AI)';
+
+    let img = slot.querySelector('img.live-feed-img');
+    let timeEl = slot.querySelector('.rec-time');
+    if (img && timeEl) {
+      timeEl.textContent = badgeText;
+      return;
+    }
+
+    slot.innerHTML = `
+      <img class="live-feed-img absolute inset-0 w-full h-full object-contain" src="${liveSrc}" alt="${escapeHtml(cam.title)}" />
+      <div class="rec-badge absolute bottom-2.5 left-2.5 z-10 px-2 py-0.5 text-[10px] font-bold bg-slate-900/85 backdrop-blur-md text-emerald-300 rounded-md border border-white/10 flex items-center gap-1 shadow-sm pointer-events-none">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="rec-time">${badgeText}</span>
+      </div>`;
+
+    img = slot.querySelector('img.live-feed-img');
+    if (img) {
+      img.onload = () => drawBoxes(cam.id, el('o-' + cssId(cam.id)), img);
+      drawBoxes(cam.id, el('o-' + cssId(cam.id)), img);
+    }
     return;
   }
 
-  const clips = rec.clips || [];
-  if (!clips.length) {
-    slot.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-xs text-slate-500">ยังไม่มีคลิปที่บันทึกไว้</div>';
-    return;
-  }
-
+  // Clips exist, so the card gets a video element. Whether it actually streams
+  // is ensurePlayback's call - see MAX_PLAYING.
   const latestClip = clips[clips.length - 1];
   const playing = slot.querySelector('video');
 
@@ -557,25 +612,22 @@ function paintRecording(cam) {
   if (playing) {
     playing.dataset.clips = clips.join(' ');
     playing.dataset.latest = latestClip;
-
-    // If playback already ended or stopped near end, immediately jump to the newest 10-minute clip from Drive D
-    if (playing.ended || (playing.paused && playing.currentTime > 0 && playing.currentTime >= (playing.duration || 1) - 0.5)) {
-      if (playing.dataset.clip !== latestClip && playing._playClip) {
-        playing._playClip(latestClip);
-      }
-    }
+    ensurePlayback();
     return;
   }
 
   slot.innerHTML = `
-    <video class="absolute inset-0 w-full h-full object-contain" muted playsinline autoplay></video>
+    <video class="absolute inset-0 w-full h-full object-contain" muted playsinline></video>
     <div class="rec-badge absolute bottom-2.5 left-2.5 z-10 px-2 py-0.5 text-[10px] font-bold bg-slate-900/85 backdrop-blur-md text-emerald-300 rounded-md border border-white/10 flex items-center gap-1 shadow-sm pointer-events-none">
       <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-      <span class="rec-time">10 นาทีล่าสุด</span>
+      <span class="rec-time">${formatClipTime(latestClip) || 'คลิปล่าสุด'}</span>
     </div>`;
 
   const video = slot.querySelector('video');
   const timeEl = slot.querySelector('.rec-time');
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
   video.dataset.clips = clips.join(' ');
   video.dataset.latest = latestClip;
 
@@ -585,69 +637,296 @@ function paintRecording(cam) {
       video._waitNextTimer = null;
     }
     video.dataset.clip = clip;
-    video.src = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
-    if (timeEl) timeEl.textContent = formatClipTime(clip);
-    video.play().catch(() => { /* a card off screen or muted policy */ });
+    const targetSrc = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
+    if (!video.src.includes(targetSrc)) {
+      video.src = targetSrc;
+    }
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    if (timeEl) timeEl.textContent = formatClipTime(clip) || 'คลิปล่าสุด';
+    const p = video.play();
+    if (p && p.catch) {
+      p.catch(() => {
+        video.muted = true;
+        video.play().catch(() => {});
+      });
+    }
   };
   video._playClip = playClip;
 
-  // Auto transition when clip ends:
-  // "เมื่อคลิปในเว็บเล่นจบแล้วให้มาดึงคลิป 10 นาทีล่าสุดใน Drive D อัตโนมัติ"
-  video.addEventListener('ended', async () => {
-    // 1. Force fresh fetch of recordings from Drive D
-    await loadRecordings(true);
+  video.addEventListener('playing', () => {
+    drawBoxes(cam.id, el('o-' + cssId(cam.id)), video);
+  });
+  video.addEventListener('loadedmetadata', () => {
+    drawBoxes(cam.id, el('o-' + cssId(cam.id)), video);
+  });
 
+  video.addEventListener('ended', async () => {
+    await loadRecordings(true);
     const freshRec = state.recordings.get(cam.id);
     const freshClips = (freshRec && freshRec.clips) || video.dataset.clips.split(' ').filter(Boolean);
-    if (!freshClips.length) return;
+    if (!freshClips.length) {
+      video.currentTime = 0;
+      video.play().catch(() => {});
+      return;
+    }
 
     const newestClip = freshClips[freshClips.length - 1];
-
-    // If there is a newer 10-minute clip available, immediately switch to it
     if (newestClip && newestClip !== video.dataset.clip) {
       playClip(newestClip);
     } else {
-      // Current clip is already the latest. While waiting for the next 10-min clip to finish recording,
-      // show waiting badge and poll Drive D every 5 seconds until new clip lands
-      if (timeEl) timeEl.innerHTML = `<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping mr-1"></span>รอคลิปใหม่...`;
-
-      if (video._waitNextTimer) clearInterval(video._waitNextTimer);
-      video._waitNextTimer = setInterval(async () => {
-        await loadRecordings(true);
-        const pollRec = state.recordings.get(cam.id);
-        const pollClips = (pollRec && pollRec.clips) || [];
-        const pollNewest = pollClips[pollClips.length - 1];
-        if (pollNewest && pollNewest !== video.dataset.clip) {
-          clearInterval(video._waitNextTimer);
-          video._waitNextTimer = null;
-          playClip(pollNewest);
-        }
-      }, 5000);
+      // Loop smoothly
+      video.currentTime = 0;
+      video.play().catch(() => {});
     }
   });
 
-  // Handle transient playback error by retrying latest clip
   video.addEventListener('error', () => {
     setTimeout(async () => {
+      // stopCard drops the source to free the connection, and that itself
+      // raises an error event. A card that is no longer scheduled must stay off.
+      if (!state.playing.includes(cam.id)) return;
       await loadRecordings(true);
       const errRec = state.recordings.get(cam.id);
       if (errRec && errRec.latest) playClip(errRec.latest);
     }, 4000);
   });
 
-  // Start with the latest 10-minute clip
-  playClip(latestClip);
+  ensurePlayback();
+}
+
+// --- How many clips may stream at once -------------------------------------
+//
+// The newest clip from every camera adds up to about 44 Mbps, and the page is
+// usually watched through the Tailscale funnel, which relays. Playing all 29 at
+// once starves every one of them, so only the cards on screen stream, a few at
+// a time. This is the budget the comment on state.playing describes.
+const MAX_PLAYING = 4;
+
+function recVideo(camId) {
+  const slot = el('rec-' + cssId(camId));
+  return slot ? slot.querySelector('video') : null;
+}
+
+function stopCard(camId) {
+  const video = recVideo(camId);
+  if (!video) return;
+  // Pausing alone leaves the browser filling its buffer, which is the whole
+  // problem. Dropping the source is what closes the connection.
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {}
+  delete video.dataset.clip;
+}
+
+function ensurePlayback() {
+  const visible = [...state.visibleCams].filter(id => recVideo(id));
+  // A card that is already streaming keeps its slot, so scrolling a new card
+  // into view does not restart clips that are playing fine.
+  const keep = state.playing.filter(id => visible.includes(id));
+  const wanted = [...keep, ...visible.filter(id => !keep.includes(id))].slice(0, MAX_PLAYING);
+
+  for (const id of state.playing) {
+    if (!wanted.includes(id)) stopCard(id);
+  }
+  state.playing = wanted;
+
+  for (const id of wanted) {
+    const video = recVideo(id);
+    const rec = state.recordings.get(id);
+    if (!video || !rec || !rec.latest) continue;
+    if (!video.dataset.clip) {
+      if (video._playClip) video._playClip(rec.latest);
+    } else if (video.paused && !video.ended) {
+      video.muted = true;
+      video.play().catch(() => {});
+    }
+  }
+}
+
+// Cards are rebuilt whenever render() runs, so the observer is rebound with
+// them. A filtered-out card carries Tailwind's hidden class, and the observer
+// reports display:none as off screen on its own.
+function observeCards() {
+  if (!state.observer) {
+    state.observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = entry.target.dataset.camId;
+        if (!id) continue;
+        if (entry.isIntersecting) state.visibleCams.add(id);
+        else state.visibleCams.delete(id);
+      }
+      ensurePlayback();
+    }, { rootMargin: '100px' });
+  }
+  state.observer.disconnect();
+  state.visibleCams.clear();
+  document.querySelectorAll('#camera-grid [data-cam-id]').forEach(card => state.observer.observe(card));
+}
+
+
+// --- Error notifications ---------------------------------------------------
+//
+// Everything that goes wrong lands here, keyed by what it is so that a check
+// that runs every few seconds does not stack the same alert twenty times.
+// The bell in the toolbar counts what is wrong right now; a toast pops up the
+// first time an alert appears, and again when it is resolved so the reader
+// knows the recorder or a camera came back.
+
+const alerts = new Map(); // id -> { level, title, message, hint, at, resolved }
+const TOAST_MS = { error: 12000, warn: 8000, info: 4000 };
+const LEVEL_RANK = { error: 2, warn: 1, info: 0 };
+
+function setAlert(id, { level = 'error', title, message = '', hint = '' } = {}) {
+  const cur = alerts.get(id);
+  if (cur && !cur.resolved && cur.title === title && cur.message === message) return;
+  alerts.set(id, { level, title, message, hint, at: Date.now(), resolved: false });
+  renderAlerts(true);
+  showToast({ level, title, message });
+}
+
+function clearAlert(id) {
+  const cur = alerts.get(id);
+  if (!cur || cur.resolved) return;
+  cur.resolved = true;
+  cur.at = Date.now();
+  renderAlerts(false);
+  showToast({ level: 'info', title: 'กลับมาปกติแล้ว', message: cur.title });
+}
+
+function renderAlerts(ring) {
+  const list = el('alert-list');
+  if (!list) return;
+
+  const active = [...alerts.values()].filter(a => !a.resolved);
+  const worst = active.reduce((w, a) => Math.max(w, LEVEL_RANK[a.level] || 0), -1);
+  // One bell in the sidebar, one in the mobile header; both show the same thing
+  document.querySelectorAll('.alert-bell').forEach(bell => {
+    const count = bell.querySelector('.alert-count');
+    if (count) {
+      count.textContent = String(active.length);
+      count.classList.toggle('hidden', !active.length);
+      count.classList.toggle('is-warn', worst === 1);
+    }
+    bell.classList.toggle('has-error', worst === 2);
+    bell.classList.toggle('has-warn', worst === 1);
+    bell.title = active.length ? `การแจ้งเตือน ${active.length} รายการ` : 'การแจ้งเตือน';
+    if (ring && active.length) {
+      bell.classList.remove('is-ringing');
+      void bell.offsetWidth; // restart the animation
+      bell.classList.add('is-ringing');
+    }
+  });
+
+  const items = [...alerts.entries()].sort((a, b) => {
+    if (a[1].resolved !== b[1].resolved) return a[1].resolved ? 1 : -1;
+    return b[1].at - a[1].at;
+  });
+  if (!items.length) {
+    list.innerHTML = '<div class="alert-empty">ไม่มีปัญหา ทุกอย่างทำงานปกติ</div>';
+    return;
+  }
+  list.innerHTML = items.map(([id, a]) => `
+    <div class="alert-item level-${a.level}${a.resolved ? ' is-resolved' : ''}" data-alert-id="${escapeHtml(id)}">
+      <span class="dot"></span>
+      <div>
+        <div class="title">${escapeHtml(a.title)}${a.resolved ? ' <span class="font-normal text-slate-400">— แก้แล้ว</span>' : ''}</div>
+        ${a.message ? `<div class="msg">${escapeHtml(a.message)}</div>` : ''}
+        ${a.hint && !a.resolved ? `<span class="hint">${escapeHtml(a.hint)}</span>` : ''}
+      </div>
+      <span class="time">${new Date(a.at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
+    </div>`).join('');
+}
+
+function showToast({ level, title, message }) {
+  const stack = el('toast-stack');
+  if (!stack) return;
+  const t = document.createElement('div');
+  t.className = `toast level-${level}`;
+  t.innerHTML = `
+    <span class="bar"></span>
+    <div>
+      <div class="title">${escapeHtml(title)}</div>
+      ${message ? `<div class="msg">${escapeHtml(message)}</div>` : ''}
+    </div>
+    <button class="close" aria-label="ปิด">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>`;
+  const remove = () => {
+    if (t.classList.contains('is-leaving')) return;
+    t.classList.add('is-leaving');
+    t.addEventListener('animationend', () => t.remove(), { once: true });
+  };
+  t.querySelector('.close').addEventListener('click', remove);
+  t.addEventListener('click', (e) => { if (!e.target.closest('.close')) toggleAlertPanel(true); });
+  stack.appendChild(t);
+  // Keep the stack short: the bell has the full list
+  while (stack.children.length > 4) stack.firstElementChild.remove();
+  setTimeout(remove, TOAST_MS[level] || 6000);
+}
+
+function toggleAlertPanel(open, bell) {
+  const panel = el('alert-panel');
+  if (!panel) return;
+  const show = open === undefined ? panel.classList.contains('hidden') : open;
+  panel.classList.toggle('hidden', !show);
+  document.querySelectorAll('.alert-bell').forEach(b => b.setAttribute('aria-expanded', String(show)));
+  if (!show) return;
+
+  // Anchor to the bell that was clicked: the sidebar one sits at the bottom
+  // left, the mobile one at the top right, so open towards the free side.
+  // With no bell (a toast was clicked) it goes in the bottom-right corner.
+  const r = bell ? bell.getBoundingClientRect() : null;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  panel.style.left = panel.style.right = panel.style.top = panel.style.bottom = '';
+  if (!r) {
+    panel.style.right = '16px';
+    panel.style.bottom = '16px';
+    return;
+  }
+  if (r.left < vw / 2) panel.style.left = Math.max(8, r.left) + 'px';
+  else panel.style.right = Math.max(8, vw - r.right) + 'px';
+  if (r.top > vh / 2) panel.style.bottom = (vh - r.top + 8) + 'px';
+  else panel.style.top = (r.bottom + 8) + 'px';
+}
+
+function initAlerts() {
+  const panel = el('alert-panel');
+  if (!panel) return;
+  document.querySelectorAll('.alert-bell').forEach(bell => {
+    bell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAlertPanel(panel.classList.contains('hidden'), bell);
+    });
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => toggleAlertPanel(false));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleAlertPanel(false); });
+  el('alert-clear')?.addEventListener('click', () => {
+    for (const [id, a] of alerts) if (a.resolved) alerts.delete(id);
+    renderAlerts(false);
+  });
+  renderAlerts(false);
+
+  // Script errors and rejected promises that nothing caught
+  window.addEventListener('error', (e) => {
+    setAlert('js:' + (e.message || 'error'), { level: 'error', title: 'เกิดข้อผิดพลาดในหน้าเว็บ', message: e.message || String(e.error || '') });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const msg = e.reason && e.reason.message ? e.reason.message : String(e.reason || '');
+    setAlert('js:' + msg, { level: 'error', title: 'เกิดข้อผิดพลาดในหน้าเว็บ', message: msg });
+  });
+  window.addEventListener('offline', () => setAlert('offline', { level: 'error', title: 'ไม่มีการเชื่อมต่ออินเทอร์เน็ต', message: 'ภาพสดและข้อมูลจะไม่อัปเดตจนกว่าจะกลับมาออนไลน์' }));
+  window.addEventListener('online', () => clearAlert('offline'));
 }
 
 function showRecorderNotice(off) {
-  let bar = el('recorder-notice');
-  if (!off) { if (bar) bar.remove(); return; }
-  if (bar) return;
-  bar = document.createElement('div');
-  bar.id = 'recorder-notice';
-  bar.className = 'detector-notice';
-  bar.textContent = 'ตัวบันทึกไม่ได้ทำงาน การ์ดจึงยังไม่มีคลิป — เปิดด้วย npm run record';
-  document.body.insertBefore(bar, document.body.firstChild);
+  if (!off) { clearAlert('recorder'); return; }
+  setAlert('recorder', {
+    level: 'warn',
+    title: 'ตัวบันทึกไม่ได้ทำงาน',
+    message: 'การ์ดจึงยังไม่มีคลิปย้อนหลัง',
+    hint: 'npm run record'
+  });
 }
 
 // --- Vehicle detection -----------------------------------------------------
@@ -681,19 +960,29 @@ async function loadDetections() {
         ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
     }
 
+    // Update live feed images on any cards operating in live image mode
+    state.cameras.forEach(cam => {
+      const slot = el('rec-' + cssId(cam.id));
+      const liveImg = slot && slot.querySelector('img.live-feed-img');
+      if (liveImg) {
+        liveImg.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
+      }
+    });
+
     if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
     redrawAllBoxes();
 
     paintCardCounts();
+    clearAlert('detections-api');
   } catch (err) {
-    /* detector off; leave the page as it is */
+    setAlert('detections-api', { level: 'error', title: 'อ่านผลตรวจจับไม่ได้', message: err.message });
   }
 }
 
 const LABELS = { car: 'รถยนต์', motorcycle: 'จยย.', bus: 'รถโดยสาร', truck: 'บรรทุก' };
 // A count is only worth showing while it still describes the road. Detection
 // runs on the open camera alone, so anything older than this is a leftover.
-const STALE_AFTER = 120;
+const STALE_AFTER = 300;
 
 // Reads from the stored readings rather than from one response, so a fresh
 // grid can be filled in too. The catalogue and the detections are fetched at
@@ -707,22 +996,18 @@ function paintCardCounts() {
     const d = state.detections.get(cam.id);
     const rec = state.recordings.get(cam.id);
 
-    // 1. Live detection reading with count and speed
+    // 1. Live detection reading with count
     if (d && d.total !== null) {
       const parts = Object.entries(d.counts || {})
         .filter(([_, n]) => n > 0)
         .map(([k, n]) => `${LABELS[k] || k} ${n}`)
         .join(' · ');
-      const spd = d.area_speed;
-      const spdBadge = spd && spd.avg_px_s !== undefined
-        ? ` · <span class="font-bold text-sky-500 dark:text-sky-400">⚡ ${spd.avg_px_s} px/s</span> <span class="text-slate-500">(${spd.status_th || spd.status})</span>`
-        : '';
-      box.innerHTML = `<span class="font-bold text-emerald-600 dark:text-emerald-400">🚗 ${d.total} คัน</span>${parts ? ` <span class="text-slate-500 text-[10px]">(${parts})</span>` : ''}${spdBadge}`;
+      box.innerHTML = `<span class="font-bold text-emerald-600 dark:text-emerald-400">🚗 ${d.total} คัน</span>${parts ? ` <span class="text-slate-500 text-[10px]">(${parts})</span>` : ''}`;
       return;
     }
 
-    // 2. Count from 10-minute clip CSV in Drive D
-    if (rec && rec.lastCount && rec.lastCount.total !== null) {
+    // 2. Count from 10-minute clip CSV in Drive D (only if recording is fresh)
+    if (rec && rec.isFresh && rec.lastCount && rec.lastCount.total !== null) {
       const lc = rec.lastCount;
       const parts = Object.entries(lc.counts || {})
         .filter(([_, n]) => n > 0)
@@ -737,15 +1022,12 @@ function paintCardCounts() {
 }
 
 function showDetectorNotice(off) {
-  let bar = el('detector-notice');
-  if (!off) { if (bar) bar.remove(); return; }
-  if (bar) return;
-
-  bar = document.createElement('div');
-  bar.id = 'detector-notice';
-  bar.className = 'detector-notice';
-  bar.textContent = 'เว็บนี้ไม่มีการตรวจจับรถ — ตัวตรวจจับทำงานบนเครื่องที่รันเซิร์ฟเวอร์เท่านั้น เปิดที่ http://localhost:3000 เพื่อดูกรอบตรวจจับ';
-  document.body.insertBefore(bar, document.body.firstChild);
+  if (!off) { clearAlert('detector'); return; }
+  setAlert('detector', {
+    level: 'warn',
+    title: 'ไม่มีการตรวจจับรถ',
+    message: 'ตัวตรวจจับทำงานบนเครื่องที่รันเซิร์ฟเวอร์เท่านั้น เปิดที่ localhost:3000 เพื่อดูกรอบตรวจจับ'
+  });
 }
 
 
@@ -758,10 +1040,23 @@ function showDetectorNotice(off) {
 
 const BOX_COLOURS = { car: '#54C00C', motorcycle: '#FEDE04', bus: '#FF9020', truck: '#FF3030' };
 
-function pictureRect(video) {
-  const ew = video.clientWidth, eh = video.clientHeight;
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw || !vh) return { x: 0, y: 0, w: ew, h: eh };
+function pictureRect(media) {
+  if (!media) return { x: 0, y: 0, w: 0, h: 0 };
+  const ew = media.clientWidth || media.offsetWidth || 0;
+  const eh = media.clientHeight || media.offsetHeight || 0;
+  const vw = media.videoWidth || media.naturalWidth || 0;
+  const vh = media.videoHeight || media.naturalHeight || 0;
+  if (!vw || !vh || !ew || !eh) {
+    const parent = media.parentElement;
+    const pw = parent ? (parent.clientWidth || parent.offsetWidth || 0) : 0;
+    const ph = parent ? (parent.clientHeight || parent.offsetHeight || 0) : 0;
+    const fallbackVw = 16, fallbackVh = 9;
+    const cw = pw || ew, ch = ph || eh;
+    if (!cw || !ch) return { x: 0, y: 0, w: 0, h: 0 };
+    const scale = Math.min(cw / fallbackVw, ch / fallbackVh);
+    const w = fallbackVw * scale, h = fallbackVh * scale;
+    return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
+  }
 
   const scale = Math.min(ew / vw, eh / vh);
   const w = vw * scale, h = vh * scale;
@@ -773,11 +1068,30 @@ function drawBoxes(camId, overlay, video) {
   const reading = state.detections.get(camId);
   const boxes = (reading && reading.boxes) || [];
 
-  if (!state.showOverlay) { overlay.innerHTML = ''; return; }
+  const isDetail = overlay.id === 'detail-overlay';
+  const badgeBottom = isDetail ? '48px' : '8px';
+
+  // In the camera menu (grid): do NOT show bounding boxes by default (clean video)
+  // In the detail modal (when clicking to view): show bounding boxes!
+  if (isDetail) {
+    if (!state.showDetailOverlay) { overlay.innerHTML = ''; return; }
+  } else {
+    if (!state.showGridOverlay) { overlay.innerHTML = ''; return; }
+  }
+
+  if (!reading) {
+    overlay.innerHTML = `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
+        ${state.focusId === camId ? 'กำลังเริ่มตรวจจับ...' : 'รอรอบตรวจจับ AI...'}
+      </div>`;
+    return;
+  }
 
   if (!boxes.length) {
-    overlay.innerHTML = `<div style="position:absolute;bottom:8px;left:8px;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.7);color:#94a3b8;font-size:10px">
-        ${state.focusId === camId ? 'กำลังเริ่มตรวจจับ...' : 'ยังไม่ได้ตรวจจับกล้องนี้'}
+    const age = Math.round(Date.now() / 1000 - reading.at);
+    overlay.innerHTML = `
+      <div style="position:absolute;bottom:${badgeBottom};left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.15);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;box-shadow:0 4px 6px -1px rgba(0,0,0,.5);pointer-events:none">
+        <span style="color:#38bdf8;font-weight:bold">🚗 0 คัน</span>
+        <span style="color:#64748b;font-size:10px">(${age < 3 ? 'สด' : age + ' วิที่แล้ว'})</span>
       </div>`;
     return;
   }
@@ -785,7 +1099,6 @@ function drawBoxes(camId, overlay, video) {
   const r = pictureRect(video);
   const age = Math.round(Date.now() / 1000 - reading.at);
   const spd = reading.area_speed;
-  const spdVal = spd && spd.avg_px_s !== undefined ? spd.avg_px_s : 0;
   const spdStatus = spd ? (spd.status_th || spd.status) : '';
   const spdColor = spd && spd.status === 'jam' ? '#f43f5e' : (spd && spd.status === 'slow' ? '#fbbf24' : '#34d399');
 
@@ -796,11 +1109,12 @@ function drawBoxes(camId, overlay, video) {
         const w = b.w * r.w, h = b.h * r.h;
         const c = BOX_COLOURS[b.k] || '#54C00C';
         const typeName = LABELS[b.k] || b.k;
-        const speedText = b.spd !== undefined && b.spd > 0 ? `${b.spd} px/s` : (b.stp ? 'จอดนิ่ง' : '');
-        const labelText = `#${b.id ?? ''} ${typeName} ${speedText}`.trim();
-        const tagWidth = Math.max(65, labelText.length * 6.5 + 14);
+        const stoppedText = b.stp ? ' (จอดนิ่ง)' : '';
+        const idPrefix = (b.id !== undefined && b.id !== null) ? `#${b.id} ` : '';
+        const labelText = `${idPrefix}${typeName}${stoppedText}`.trim();
+        const tagWidth = Math.max(45, labelText.length * 7 + 12);
 
-        const tag = (b.id === undefined && !typeName) ? '' :
+        const tag = (!idPrefix && !typeName) ? '' :
           `<g>
              <rect x="${x.toFixed(1)}" y="${Math.max(0, y - 16).toFixed(1)}" width="${tagWidth.toFixed(0)}" height="15" fill="rgba(15,23,42,0.88)" rx="3" />
              <text x="${(x + 4).toFixed(1)}" y="${Math.max(11, y - 4).toFixed(1)}" fill="${c}"
@@ -811,23 +1125,24 @@ function drawBoxes(camId, overlay, video) {
                  fill="none" stroke="${c}" stroke-width="2" rx="2" />${tag}`;
       }).join('')}
     </svg>
-    <div style="position:absolute;bottom:8px;left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.15);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;box-shadow:0 4px 6px -1px rgba(0,0,0,.5);pointer-events:none">
+    <div style="position:absolute;bottom:${badgeBottom};left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.15);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;box-shadow:0 4px 6px -1px rgba(0,0,0,.5);pointer-events:none">
       <span style="color:#38bdf8;font-weight:bold">🚗 ${boxes.length} คัน</span>
-      ${spd ? `<span style="color:#64748b">|</span><span style="color:${spdColor};font-weight:bold">⚡ ${spdVal} px/s (${spdStatus})</span>` : ''}
+      ${spd && spdStatus ? `<span style="color:#64748b">|</span><span style="color:${spdColor};font-weight:bold">${spdStatus}</span>` : ''}
       <span style="color:#64748b;font-size:10px">(${age < 3 ? 'สด' : age + ' วิที่แล้ว'})</span>
     </div>`;
 }
 
 function redrawAllBoxes() {
   if (state.detail) {
-    drawBoxes(state.detail.id, el('detail-overlay'), el('detail-video'));
+    const detailMedia = (state.detailMode === 'det') ? el('detail-img') : el('detail-video');
+    drawBoxes(state.detail.id, el('detail-overlay'), detailMedia);
   }
-  state.detections.forEach((reading, camId) => {
-    const cardOverlay = el('o-' + cssId(camId));
-    const cardSlot = el('rec-' + cssId(camId));
-    const cardVideo = cardSlot && cardSlot.querySelector('video');
-    if (cardOverlay && cardVideo) {
-      drawBoxes(camId, cardOverlay, cardVideo);
+  state.cameras.forEach(cam => {
+    const cardOverlay = el('o-' + cssId(cam.id));
+    const cardSlot = el('rec-' + cssId(cam.id));
+    const cardMedia = cardSlot && (cardSlot.querySelector('video') || cardSlot.querySelector('img'));
+    if (cardOverlay && cardMedia) {
+      drawBoxes(cam.id, cardOverlay, cardMedia);
     }
   });
 }
@@ -883,15 +1198,10 @@ function updateFocusBadge() {
   if (on) b.textContent = `ตรวจจับสด ${state.focusFps.toFixed(1)} fps`;
 }
 
-// Focus on the open camera if viewing detail, otherwise focus on first watchlist camera or first camera.
+// Focus on the open camera if viewing detail, otherwise sweeps cover all cameras.
 function refreshFocusTarget() {
   if (state.detail) {
     setFocus(state.detail.id);
-  } else if (state.watchlist && state.watchlist.size > 0) {
-    const firstWatched = Array.from(state.watchlist)[0];
-    setFocus(firstWatched);
-  } else if (state.cameras && state.cameras.length > 0) {
-    setFocus(state.cameras[0].id);
   } else {
     setFocus(null);
   }
@@ -905,14 +1215,16 @@ function refreshFocusTarget() {
 
 function openDetail(cam) {
   state.detail = cam;
-  state.detailMode = 'det';
+  if (!state.detailMode || state.detailMode === 'det') {
+    state.detailMode = 'live';
+  }
 
   el('detail-title').textContent = cam.title;
   el('detail-org').textContent = cam.org;
   el('detail').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
-  renderDetail();
+  setDetailMode(state.detailMode);
   refreshFocusTarget();
   if (state.detailTimer) clearInterval(state.detailTimer);
   state.detailTimer = setInterval(() => {
@@ -955,18 +1267,19 @@ function renderDetail(imageOnly = false) {
   const img = el('detail-img');
   const video = el('detail-video');
   const msg = el('detail-msg');
+  const ov = el('detail-overlay');
   const reading = state.detections.get(cam.id);
 
   if (state.detailMode === 'det') {
     img.classList.remove('hidden');
     video.classList.add('hidden');
     video.onended = null;
-    const ov = el('detail-overlay');
-    if (ov) ov.innerHTML = '';
 
     const hls = state.players.get('detail');
     if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
     if (!imageOnly) { try { video.pause(); video.removeAttribute('src'); } catch (e) {} }
+
+    img.onload = () => drawBoxes(cam.id, ov, img);
 
     if (reading && reading.total !== null) {
       img.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
@@ -975,13 +1288,12 @@ function renderDetail(imageOnly = false) {
       img.removeAttribute('src');
       msg.textContent = reading && reading.error
         ? 'ตรวจจับไม่สำเร็จ: ' + reading.error
-        : 'ยังไม่มีผลตรวจจับ — ตัวตรวจจับอาจไม่ได้เปิดอยู่';
+        : 'กำลังเชื่อมต่อตัวตรวจจับ AI...';
     }
+    drawBoxes(cam.id, ov, img);
   } else if (state.detailMode === 'rec') {
     img.classList.add('hidden');
     video.classList.remove('hidden');
-    const ov = el('detail-overlay');
-    if (ov) ov.innerHTML = '';
 
     const hls = state.players.get('detail');
     if (hls) { try { hls.destroy(); } catch (e) {} state.players.delete('detail'); }
@@ -991,24 +1303,42 @@ function renderDetail(imageOnly = false) {
     if (!clips.length) {
       msg.textContent = 'ยังไม่มีคลิป 10 นาทีที่บันทึกไว้ใน Drive D';
       video.removeAttribute('src');
+      if (ov) ov.innerHTML = '';
     } else {
       msg.textContent = '';
       const latestClip = clips[clips.length - 1];
       const targetSrc = `/api/recording/${encodeURIComponent(cam.id)}/${latestClip}`;
+      video.muted = true;
+      video.defaultMuted = true;
+      video.playsInline = true;
       if (!video.src.includes(targetSrc)) {
         video.src = targetSrc;
         video.play().catch(() => {});
+      } else if (video.paused) {
+        video.play().catch(() => {});
       }
+      video.onloadeddata = () => drawBoxes(cam.id, ov, video);
+      video.onplaying = () => drawBoxes(cam.id, ov, video);
       video.onended = async () => {
         await loadRecordings(true);
         const freshRec = state.recordings.get(cam.id);
         const freshClips = (freshRec && freshRec.clips) || [];
         if (freshClips.length) {
           const freshLatest = freshClips[freshClips.length - 1];
-          video.src = `/api/recording/${encodeURIComponent(cam.id)}/${freshLatest}`;
+          const newSrc = `/api/recording/${encodeURIComponent(cam.id)}/${freshLatest}`;
+          if (video.src.includes(newSrc)) {
+            video.currentTime = 0;
+            video.play().catch(() => {});
+          } else {
+            video.src = newSrc;
+            video.play().catch(() => {});
+          }
+        } else {
+          video.currentTime = 0;
           video.play().catch(() => {});
         }
       };
+      drawBoxes(cam.id, ov, video);
     }
   } else {
     // live mode
@@ -1017,8 +1347,9 @@ function renderDetail(imageOnly = false) {
     video.onended = null;
     msg.textContent = '';
     attachDetailPlayer(cam, video, msg);
-    video.addEventListener('loadedmetadata', () => drawBoxes(cam.id, el('detail-overlay'), video), { once: true });
-    setTimeout(() => drawBoxes(cam.id, el('detail-overlay'), video), 400);
+    video.addEventListener('loadedmetadata', () => drawBoxes(cam.id, ov, video), { once: true });
+    video.addEventListener('playing', () => drawBoxes(cam.id, ov, video));
+    setTimeout(() => drawBoxes(cam.id, ov, video), 400);
   }
 
   if (imageOnly) return;
@@ -1061,9 +1392,8 @@ function renderDetailCounts(cam, reading) {
         ? 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
         : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300';
     speedChips =
-      chip('ความเร็วพื้นที่ AI', spd.avg_px_s + ' px/s', 'bg-purple-500/15 border border-purple-500/30 text-purple-300') +
-      chip('สถานะวิดีโอ', spd.status_th || spd.status, tone) +
-      chip('จอดนิ่งสะสม', spd.stopped_pct + '%', 'bg-slate-800 border border-slate-700 text-slate-300');
+      chip('สถานะจราจร AI', spd.status_th || spd.status, tone) +
+      (spd.stopped_pct > 0 ? chip('จอดนิ่งสะสม', spd.stopped_pct + '%', 'bg-slate-800 border border-slate-700 text-slate-300') : '');
   }
 
   box.innerHTML =
@@ -1081,6 +1411,10 @@ function renderDetailCounts(cam, reading) {
 function attachDetailPlayer(cam, video, msg) {
   const say = (t) => { if (msg) msg.textContent = t; };
 
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+
   if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = cam.hls;
     video.play().catch(() => say('แตะเพื่อเล่น'));
@@ -1097,6 +1431,10 @@ function attachDetailPlayer(cam, video, msg) {
   });
   hls.loadSource(cam.hls);
   hls.attachMedia(video);
+  hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+    video.muted = true;
+    video.play().catch(() => say('แตะเพื่อเล่น'));
+  });
   hls.on(window.Hls.Events.ERROR, (_e, d) => {
     if (!d.fatal) return;
     if (d.type === window.Hls.ErrorTypes.NETWORK_ERROR) { say('กำลังเชื่อมต่อใหม่...'); hls.startLoad(); }
@@ -1286,110 +1624,21 @@ async function loadTrafficIndex() {
     const d = await r.json();
     const i = Number(d.index);
     const label = i < 4 ? 'คล่องตัว' : i < 7 ? 'ชะลอตัว' : 'ติดขัด';
+    state.trafficIndex = { index: i, label, updatedAt: Date.now() };
     const text = `ดัชนีจราจร ${i.toFixed(1)} · ${label}`;
     if (box) box.textContent = text;
     if (sideBox) sideBox.textContent = text;
     if (stamp) stamp.textContent = 'อัปเดต ' + new Date().toLocaleTimeString('th-TH');
+    renderDashboard();
+    clearAlert('traffic-index');
   } catch (err) {
     if (box) box.textContent = 'ดัชนีจราจร: ไม่พร้อมใช้งาน';
     if (sideBox) sideBox.textContent = 'ดัชนี: ออฟไลน์';
+    setAlert('traffic-index', { level: 'warn', title: 'ดัชนีจราจรไม่พร้อมใช้งาน', message: err.message });
   }
 }
 
-// --- Signal advice ---------------------------------------------------------
-//
-// The server reads the same traffic colours the map draws and turns them into
-// one card per road. Longdo repaints about every five minutes, so refreshing
-// faster than that redraws the same numbers.
-
-const ADVICE_REFRESH_MS = 5 * 60 * 1000;
-
-const ACTION_STYLE = {
-  meter: { chip: 'bg-rose-600 text-white', box: 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900' },
-  release: { chip: 'bg-amber-500 text-slate-900', box: 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900' },
-  watch: { chip: 'bg-slate-500 text-white', box: 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700' },
-  normal: { chip: 'bg-emerald-600 text-white', box: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900' },
-  unknown: { chip: 'bg-slate-400 text-white', box: 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700' }
-};
-
-const ACTION_LABEL = {
-  meter: 'หน่วงรถ',
-  release: 'เพิ่มไฟเขียว',
-  watch: 'เฝ้าดู',
-  normal: 'ปกติ',
-  unknown: 'ไม่มีข้อมูล'
-};
-
-const LEVEL_COLOUR = { flowing: '#54C00C', slow: '#FEDE04', jam: '#FF2020' };
-
-/** The green/amber/red proportions of a road, as one bar. */
-function shareBar(share) {
-  const part = (pct, colour) =>
-    pct > 0 ? `<div style="width:${pct}%;background:${colour}"></div>` : '';
-  return `<div class="flex h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
-    ${part(share.jam, LEVEL_COLOUR.jam)}${part(share.slow, LEVEL_COLOUR.slow)}${part(share.flowing, LEVEL_COLOUR.flowing)}
-  </div>`;
-}
-
-function directionChips(directions) {
-  if (!directions) return '';
-  const chip = (name, d) => `<span class="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-      <span style="color:${LEVEL_COLOUR[d.level]}">&#9679;</span> ${name} ${escapeHtml(d.label)}
-    </span>`;
-  return `<div class="flex flex-wrap gap-1.5 text-[11px]">
-    ${chip('ขาไป', directions.forward)}${chip('ขากลับ', directions.reverse)}
-  </div>`;
-}
-
-function adviceCard(road) {
-  const style = ACTION_STYLE[road.advice.action] || ACTION_STYLE.unknown;
-  const c = road.congestion;
-  const reading = c
-    ? `${shareBar(c.share)}
-       <p class="text-[11px] text-slate-500 dark:text-slate-400">
-         ติดขัด ${c.share.jam}% &middot; ชะลอตัว ${c.share.slow}% &middot; คล่องตัว ${c.share.flowing}%
-         <span class="text-slate-400 dark:text-slate-500">จากถนน ${c.km} กม. รอบกล้อง</span>
-       </p>`
-    : '<p class="text-[11px] text-slate-500">ไม่มีเส้นจราจรที่ระบายสีรอบจุดนี้</p>';
-
-  return `<article class="p-4 bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-300 dark:border-slate-800 space-y-2.5">
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <h3 class="text-sm font-semibold leading-snug">${escapeHtml(road.name)}</h3>
-        <p class="text-[11px] text-slate-500 mt-0.5">${c ? escapeHtml(c.label) : 'ไม่มีข้อมูล'}</p>
-      </div>
-      <span class="shrink-0 px-2 py-0.5 rounded-lg text-[11px] font-semibold ${style.chip}">
-        ${ACTION_LABEL[road.advice.action]}
-      </span>
-    </div>
-    ${reading}
-    ${directionChips(road.directions)}
-    <div class="rounded-xl border p-3 ${style.box}">
-      <p class="text-xs font-semibold leading-snug">${escapeHtml(road.advice.headline)}</p>
-      <p class="text-[11px] mt-1.5 leading-relaxed text-slate-600 dark:text-slate-300">${escapeHtml(road.advice.detail)}</p>
-    </div>
-  </article>`;
-}
-
-function renderAdvice(data) {
-  const list = el('advice-list');
-  const empty = el('advice-empty');
-  const roads = data.roads || [];
-
-  list.innerHTML = roads.map(adviceCard).join('');
-  empty.classList.toggle('hidden', roads.length > 0);
-  if (!roads.length) {
-    empty.textContent = data.error ? 'อ่านข้อมูลจราจรไม่สำเร็จ: ' + data.error : 'ยังไม่มีข้อมูลจราจร';
-  }
-
-  const acting = roads.filter((r) => r.advice.action === 'meter' || r.advice.action === 'release').length;
-  const summary = el('advice-summary');
-  summary.textContent = acting
-    ? `${acting} จาก ${roads.length} ถนนควรปรับการปล่อยรถ`
-    : `ทั้ง ${roads.length} ถนนยังไม่ต้องปรับอะไร`;
-  const stamp = el('advice-updated');
-  if (stamp) stamp.textContent = 'อัปเดต ' + new Date(data.updatedAt).toLocaleTimeString('th-TH');
-}
+// --- Traffic Congestion Data (for badges & map markers) --------------------
 
 function parseTrafficCongestion(data) {
   state.cameraTraffic.clear();
@@ -1404,8 +1653,7 @@ function parseTrafficCongestion(data) {
           roadName: road.name,
           level: road.congestion.level,
           score: road.congestion.score,
-          label: road.congestion.label,
-          action: road.advice ? road.advice.action : null
+          label: road.congestion.label
         });
         if (road.congestion.level === 'jam') jamCount++;
         else if (road.congestion.level === 'slow') slowCount++;
@@ -1427,25 +1675,286 @@ function parseTrafficCongestion(data) {
   }
 }
 
-async function loadAdvice() {
-  const summary = el('advice-summary');
+async function loadTrafficData() {
   try {
     const res = await fetch('/api/traffic-advice');
     const data = await res.json();
     parseTrafficCongestion(data);
-    renderAdvice(data);
+    renderDashboard();
+    clearAlert('traffic-data');
   } catch (err) {
-    if (summary) summary.textContent = 'อ่านข้อมูลจราจรไม่สำเร็จ';
+    setAlert('traffic-data', { level: 'warn', title: 'โหลดข้อมูลสภาพจราจรไม่ได้', message: err.message });
   }
+}
+
+// --- Dashboard View Renderer -----------------------------------------------
+
+function renderDashboard() {
+  // 1. Digital Clock
+  const dashClock = el('dash-clock');
+  if (dashClock) dashClock.textContent = new Date().toLocaleTimeString('th-TH') + ' น.';
+
+  // 2. Traffic Index
+  const trafficText = el('sidebar-traffic-index')?.textContent || '';
+  const matchIdx = trafficText.match(/(\d+\.\d+)/);
+  const idxVal = matchIdx ? parseFloat(matchIdx[1]) : (state.trafficIndex?.index || 2.8);
+  const idxNum = el('dash-kpi-index-num');
+  const idxBadge = el('dash-kpi-index-badge');
+  const idxDesc = el('dash-kpi-index-desc');
+
+  if (idxNum) idxNum.textContent = idxVal.toFixed(1);
+  if (idxBadge) {
+    if (idxVal < 4.0) {
+      idxBadge.textContent = 'คล่องตัว';
+      idxBadge.className = 'px-2 py-0.5 rounded-lg text-xs font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400';
+      if (idxDesc) idxDesc.textContent = 'การจราจรไหลลื่นดี ทั่วกรุงเทพฯ';
+    } else if (idxVal < 7.0) {
+      idxBadge.textContent = 'ชะลอตัว';
+      idxBadge.className = 'px-2 py-0.5 rounded-lg text-xs font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400';
+      if (idxDesc) idxDesc.textContent = 'เริ่มมีแถวคอยตามจุดเชื่อมต่อสำคัญ';
+    } else {
+      idxBadge.textContent = 'ติดขัดสะสม';
+      idxBadge.className = 'px-2 py-0.5 rounded-lg text-xs font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400';
+      if (idxDesc) idxDesc.textContent = 'ปริมาณรถหนาแน่นในหลายสายทาง';
+    }
+  }
+
+  // 3. Online CCTV Count
+  const camsOnline = el('dash-kpi-cams-online');
+  if (camsOnline) {
+    const total = state.cameras.length || 30;
+    camsOnline.textContent = total;
+  }
+
+  // 4. Analytics Summary & Vehicle Classification
+  const summary = roadAnalyticsState.data?.summary;
+  const roads = roadAnalyticsState.data?.roads || [];
+
+  if (summary) {
+    const vehTotal = el('dash-kpi-vehicles-total');
+    if (vehTotal) vehTotal.textContent = (summary.totalVehicles || 0).toLocaleString('th-TH');
+
+    const flowRate = el('dash-kpi-flow-rate');
+    if (flowRate) {
+      const avgRate = Math.round(((summary.totalVehicles || 0) / Math.max(1, summary.totalClips || 1)) * 6);
+      flowRate.textContent = `เฉลี่ย ~${avgRate.toLocaleString('th-TH')} คัน/ชม.`;
+    }
+
+    const kpiJam = el('dash-kpi-jam');
+    if (kpiJam) kpiJam.textContent = `ติดขัด ${summary.jamCount || 0}`;
+
+    const kpiSlow = el('dash-kpi-slow');
+    if (kpiSlow) kpiSlow.textContent = `ชะลอ ${summary.slowCount || 0}`;
+
+    const kpiFlowing = el('dash-kpi-flowing');
+    if (kpiFlowing) kpiFlowing.textContent = `คล่อง ${summary.flowingCount || 0}`;
+
+    const topJam = el('dash-kpi-top-jam');
+    if (topJam) topJam.textContent = `หนาแน่นสุด: ${summary.topCongestedRoad || '-'}`;
+
+    // Vehicle Classification breakdown
+    if (summary.counts) {
+      const sum = (summary.counts.car || 0) + (summary.counts.motorcycle || 0) + (summary.counts.bus || 0) + (summary.counts.truck || 0) || 1;
+      const carPct = Math.round(((summary.counts.car || 0) / sum) * 100);
+      const mcPct = Math.round(((summary.counts.motorcycle || 0) / sum) * 100);
+      const busPct = Math.round(((summary.counts.bus || 0) / sum) * 100);
+      const truckPct = Math.round(((summary.counts.truck || 0) / sum) * 100);
+
+      const barCar = el('dash-bar-car');
+      const barMc = el('dash-bar-mc');
+      const barBus = el('dash-bar-bus');
+      const barTruck = el('dash-bar-truck');
+      if (barCar) barCar.style.width = `${carPct}%`;
+      if (barMc) barMc.style.width = `${mcPct}%`;
+      if (barBus) barBus.style.width = `${busPct}%`;
+      if (barTruck) barTruck.style.width = `${truckPct}%`;
+
+      const cntCar = el('dash-count-car');
+      const pctCar = el('dash-pct-car');
+      if (cntCar) cntCar.textContent = (summary.counts.car || 0).toLocaleString('th-TH');
+      if (pctCar) pctCar.textContent = `${carPct}%`;
+
+      const cntMc = el('dash-count-mc');
+      const pctMc = el('dash-pct-mc');
+      if (cntMc) cntMc.textContent = (summary.counts.motorcycle || 0).toLocaleString('th-TH');
+      if (pctMc) pctMc.textContent = `${mcPct}%`;
+
+      const cntBus = el('dash-count-bus');
+      const pctBus = el('dash-pct-bus');
+      if (cntBus) cntBus.textContent = (summary.counts.bus || 0).toLocaleString('th-TH');
+      if (pctBus) pctBus.textContent = `${busPct}%`;
+
+      const cntTruck = el('dash-count-truck');
+      const pctTruck = el('dash-pct-truck');
+      if (cntTruck) cntTruck.textContent = (summary.counts.truck || 0).toLocaleString('th-TH');
+      if (pctTruck) pctTruck.textContent = `${truckPct}%`;
+    }
+  }
+
+  // 5. Featured CCTV Wall (4 Strategic Monitors)
+  const featuredContainer = el('dash-featured-cams');
+  if (featuredContainer && state.cameras.length > 0) {
+    const featuredCams = [];
+    if (state.watchlist.size > 0) {
+      for (const id of state.watchlist) {
+        const c = state.cameras.find(cam => cam.id === id);
+        if (c && featuredCams.length < 4) featuredCams.push(c);
+      }
+    }
+    const priorityIds = ['ITICM_BMAMI0076', 'ITICM_BMAMI0164', 'DOH-PER-3-008', 'ITICM_BMAMI0071', 'ITICM_BMAMI0074', 'ITICM_BMAMI0080'];
+    for (const id of priorityIds) {
+      if (featuredCams.length >= 4) break;
+      const c = state.cameras.find(cam => cam.id === id);
+      if (c && !featuredCams.includes(c)) featuredCams.push(c);
+    }
+    for (const c of state.cameras) {
+      if (featuredCams.length >= 4) break;
+      if (!featuredCams.includes(c)) featuredCams.push(c);
+    }
+
+    featuredContainer.innerHTML = featuredCams.map(cam => {
+      const trafficInfo = state.cameraTraffic.get(cam.id);
+      const isJam = trafficInfo?.level === 'jam';
+      const isSlow = trafficInfo?.level === 'slow';
+      const badgeClass = isJam ? 'bg-rose-500/90 text-white' : isSlow ? 'bg-amber-500/90 text-white' : 'bg-emerald-500/90 text-white';
+      const badgeText = isJam ? 'ติดขัด' : isSlow ? 'ชะลอตัว' : 'คล่องตัว';
+
+      return `
+        <div class="dash-cam-card rounded-2xl overflow-hidden bg-black border border-slate-700/60 shadow-md group relative cursor-pointer hover:border-rose-500/60 transition-all" data-dash-cam="${escapeHtml(cam.id)}">
+          <div class="aspect-video relative overflow-hidden flex items-center justify-center bg-slate-950">
+            <img src="${escapeHtml(cam.image || '')}" alt="${escapeHtml(cam.title)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" onerror="this.onerror=null;this.src='/img/cam-offline.png';" />
+            
+            <div class="absolute top-2 left-2 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-[9px] font-bold text-white tracking-wider">
+              <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+              <span>LIVE</span>
+            </div>
+
+            <div class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded-md ${badgeClass} backdrop-blur-md text-[10px] font-bold shadow-sm">
+              ${badgeText}
+            </div>
+
+            <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+              <span class="p-2.5 rounded-full bg-rose-600 text-white shadow-lg transform group-hover:scale-110 transition-transform">
+                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </span>
+            </div>
+          </div>
+
+          <div class="p-2.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <div class="min-w-0 flex-1">
+              <h4 class="text-xs font-bold truncate text-slate-900 dark:text-slate-100 leading-snug">${escapeHtml(cam.title)}</h4>
+              <p class="text-[10px] text-slate-500 truncate">${escapeHtml(cam.org || 'BMA CCTV')}</p>
+            </div>
+            <span class="text-[10px] font-semibold text-rose-500 shrink-0 ml-2">ดูสด →</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    featuredContainer.querySelectorAll('[data-dash-cam]').forEach(card => {
+      card.addEventListener('click', () => {
+        const cam = state.cameras.find(c => c.id === card.dataset.dashCam);
+        if (cam) openDetail(cam);
+      });
+    });
+  }
+
+  // 6. Top Congested Hotspots (Top 5)
+  const hotspotsContainer = el('dash-hotspots-list');
+  if (hotspotsContainer && roads.length > 0) {
+    const sortedRoads = [...roads].sort((a, b) => {
+      const scoreA = (a.status?.key === 'jam' ? 100 : a.status?.key === 'slow' ? 50 : 10) + (a.stats?.latest10MinVolume || 0);
+      const scoreB = (b.status?.key === 'jam' ? 100 : b.status?.key === 'slow' ? 50 : 10) + (b.stats?.latest10MinVolume || 0);
+      return scoreB - scoreA;
+    }).slice(0, 5);
+
+    hotspotsContainer.innerHTML = sortedRoads.map((road, index) => {
+      const isJam = road.status?.key === 'jam';
+      const isSlow = road.status?.key === 'slow';
+      const badgeCls = isJam ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                     : isSlow ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                     : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
+
+      return `
+        <div class="p-3 rounded-2xl bg-slate-50/80 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 hover:border-rose-500/40 transition-all flex items-center justify-between gap-3 cursor-pointer" data-dash-road="${escapeHtml(road.id)}">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <span class="w-6 h-6 rounded-lg ${index === 0 ? 'bg-rose-600 text-white font-black' : index === 1 ? 'bg-amber-500 text-white font-bold' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold'} flex items-center justify-center text-xs shrink-0 shadow-sm">
+              ${index + 1}
+            </span>
+            <div class="min-w-0">
+              <h4 class="text-xs font-bold text-slate-900 dark:text-white truncate">${escapeHtml(road.name)}</h4>
+              <p class="text-[10.5px] text-slate-500 dark:text-slate-400 truncate">${road.zone} • ${road.stats?.latest10MinVolume || 0} คัน/10 นาที</p>
+            </div>
+          </div>
+
+          <div class="text-right shrink-0 flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded-md text-[10.5px] font-bold border ${badgeCls}">
+              ${road.status?.label || 'ปกติ'}
+            </span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    hotspotsContainer.querySelectorAll('[data-dash-road]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const roadId = btn.dataset.dashRoad;
+        const target = document.querySelector(`[data-road-id="${roadId}"]`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('ring-2', 'ring-rose-500');
+          setTimeout(() => target.classList.remove('ring-2', 'ring-rose-500'), 2500);
+        }
+      });
+    });
+  }
+
+  // 7. AI Traffic Summary text
+  const aiSummary = el('dash-ai-summary-text');
+  if (aiSummary) {
+    const topRoad = summary?.topCongestedRoad;
+    const jamCount = summary?.jamCount || 0;
+    const slowCount = summary?.slowCount || 0;
+
+    let text = `ขณะนี้ดัชนีจราจรรวมกรุงเทพฯ อยู่ที่ **${idxVal.toFixed(1)}** (${idxVal < 4 ? 'สภาพคล่องตัวดี' : idxVal < 7 ? 'เริ่มชะลอตัวในหลายเส้นทาง' : 'มีปริมาณรถติดขัดหนาแน่น'}) `;
+    if (jamCount > 0 && topRoad) {
+      text += `โดยมีถนนที่มีรถสะสมหนาแน่นที่สุดคือ **${topRoad}** มีรถติดขัดรวม ${jamCount} เส้นทางหลัก แนะนำผู้เดินทางตรวจสอบทางเลี่ยงก่อนออกเดินทาง`;
+    } else if (slowCount > 0) {
+      text += `มีการชะลอตัวสะสม ${slowCount} สายทางในเขตเมืองชั้นในและสะพานข้ามแม่น้ำเจ้าพระยา สามารถสัญจรได้ต่อเนื่อง`;
+    } else {
+      text += `การจราจรบนถนนสายหลัก 11 สายและรอบ 30 กล้อง CCTV ไหลลื่นได้ดีทุกทิศทาง ไม่มีจุดติดขัดสะสมรุนแรง`;
+    }
+    aiSummary.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  }
+
+  // Bind Ask AI buttons
+  const dashChatBtn = el('dash-btn-chat');
+  if (dashChatBtn) dashChatBtn.onclick = () => toggleChatDrawer(true);
+  const dashAskAi = el('dash-btn-ask-ai');
+  if (dashAskAi) dashAskAi.onclick = () => toggleChatDrawer(true);
 }
 
 // --- Views -----------------------------------------------------------------
 
 function switchView(view) {
+  if (view === 'analytics') {
+    switchView('dashboard');
+    setTimeout(() => {
+      const target = el('dashboard-roads-section');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+    document.querySelectorAll('[data-view-target]').forEach(btn => {
+      const active = btn.dataset.viewTarget === 'analytics';
+      btn.classList.toggle('is-active', active);
+    });
+    return;
+  }
+
   state.view = view;
-  el('view-cams').classList.toggle('hidden', view !== 'cams');
-  el('view-map').classList.toggle('hidden', view !== 'map');
-  el('view-advice').classList.toggle('hidden', view !== 'advice');
+  if (el('view-dashboard')) el('view-dashboard').classList.toggle('hidden', view !== 'dashboard');
+  if (el('view-cams')) el('view-cams').classList.toggle('hidden', view !== 'cams');
+  if (el('view-map')) el('view-map').classList.toggle('hidden', view !== 'map');
+  if (el('view-analytics')) el('view-analytics').classList.toggle('hidden', view !== 'analytics');
 
   // Sync sidebar tabs & mobile tabs
   document.querySelectorAll('[data-view-target]').forEach(btn => {
@@ -1461,13 +1970,446 @@ function switchView(view) {
 
   document.body.classList.toggle('hide-toolbar', view !== 'cams');
 
-  if (view === 'map') {
+  if (view === 'dashboard') {
+    renderDashboard();
+  } else if (view === 'map') {
     buildMap();
     setTimeout(() => state.map && state.map.resize(), 60);
     if (state.map && state.map.isStyleLoaded()) addCameraMarkers();
     loadTrafficIndex();
-  } else if (view === 'advice') {
-    loadAdvice();
+  } else if (view === 'analytics') {
+    loadRoadAnalytics();
+  }
+}
+
+// --- Road Traffic Analytics (Drive D 10-Minute Video & AI Vehicles) ----------
+
+const roadAnalyticsState = {
+  data: null,
+  day: 'latest',
+  filter: 'all',
+  query: '',
+  selectedCameraPerRoad: {}, // roadId -> camId
+  selectedClipPerRoad: {}    // roadId -> clipUrl
+};
+
+async function loadRoadAnalytics(day = null, forceFresh = false) {
+  if (day) roadAnalyticsState.day = day;
+  const targetDay = roadAnalyticsState.day;
+  const listEl = el('analytics-road-list');
+  const emptyEl = el('analytics-empty');
+
+  // Update Day buttons UI
+  document.querySelectorAll('.analytics-day-btn').forEach(btn => {
+    const active = btn.dataset.day === targetDay;
+    btn.classList.toggle('font-semibold', active);
+    btn.classList.toggle('bg-white', active);
+    btn.classList.toggle('dark:bg-slate-700', active);
+    btn.classList.toggle('text-rose-600', active);
+    btn.classList.toggle('dark:text-rose-400', active);
+    btn.classList.toggle('shadow-sm', active);
+    btn.classList.toggle('text-slate-600', !active);
+    btn.classList.toggle('dark:text-slate-300', !active);
+  });
+
+  if (listEl && (!roadAnalyticsState.data || forceFresh)) {
+    listEl.innerHTML = `
+      <div class="col-span-full py-20 flex flex-col items-center justify-center gap-3">
+        <div class="w-10 h-10 rounded-full border-2 border-rose-500 border-t-transparent animate-spin"></div>
+        <div class="text-sm font-medium text-slate-500">กำลังวิเคราะห์ข้อมูลวิดีโอ 10 นาทีและตัวเลขรถยนต์จากไดรฟ์ D...</div>
+      </div>
+    `;
+  }
+
+  try {
+    const url = `/api/road-analytics?day=${encodeURIComponent(targetDay)}${forceFresh ? '&fresh=1' : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    roadAnalyticsState.data = data;
+    renderRoadAnalytics(data);
+    clearAlert('road-analytics');
+  } catch (err) {
+    setAlert('road-analytics', { level: 'warn', title: 'โหลดข้อมูลวิเคราะห์รายถนนไม่ได้', message: err.message });
+    if (listEl) {
+      listEl.innerHTML = `
+        <div class="col-span-full py-16 text-center text-rose-500 font-medium text-sm">
+          ไม่สามารถโหลดข้อมูลการวิเคราะห์รายถนนได้ (${err.message})
+        </div>
+      `;
+    }
+  }
+}
+
+function renderRoadAnalytics(data) {
+  if (!data || !data.summary || !data.roads) return;
+
+  const summary = data.summary;
+  const roads = data.roads;
+
+  // 1. Update KPI Cards
+  const kpiRoads = el('kpi-roads-count');
+  if (kpiRoads) kpiRoads.textContent = summary.totalRoads || '11';
+
+  const kpiVehicles = el('kpi-total-vehicles');
+  if (kpiVehicles) kpiVehicles.textContent = (summary.totalVehicles || 0).toLocaleString('th-TH');
+
+  const kpiClips = el('kpi-clips-count');
+  if (kpiClips) kpiClips.textContent = `จาก ${summary.totalClips || 0} คลิปวิดีโอ (รอบละ 10 นาทีบนไดรฟ์ D)`;
+
+  const kpiJam = el('kpi-jam-badge');
+  if (kpiJam) kpiJam.textContent = `ติดขัด ${summary.jamCount || 0}`;
+
+  const kpiSlow = el('kpi-slow-badge');
+  if (kpiSlow) kpiSlow.textContent = `ชะลอตัว ${summary.slowCount || 0}`;
+
+  const kpiFlowing = el('kpi-flowing-badge');
+  if (kpiFlowing) kpiFlowing.textContent = `คล่อง ${summary.flowingCount || 0}`;
+
+  const kpiTop = el('kpi-top-jammed');
+  if (kpiTop) kpiTop.textContent = `หนาแน่นสูงสุด: ${summary.topCongestedRoad || '-'}`;
+
+  const kpiBreakdown = el('kpi-vehicle-breakdown');
+  if (kpiBreakdown && summary.counts) {
+    const sum = (summary.counts.car || 0) + (summary.counts.motorcycle || 0) + (summary.counts.bus || 0) + (summary.counts.truck || 0) || 1;
+    const carPct = Math.round(((summary.counts.car || 0) / sum) * 100);
+    const mcPct = Math.round(((summary.counts.motorcycle || 0) / sum) * 100);
+    const busPct = Math.round(((summary.counts.bus || 0) / sum) * 100);
+    const truckPct = Math.round(((summary.counts.truck || 0) / sum) * 100);
+    kpiBreakdown.innerHTML = `
+      <span class="text-sky-600 dark:text-sky-400 font-semibold" title="รถยนต์ส่วนบุคคล/กระบะ">🚗 ${carPct}%</span>
+      <span class="text-slate-300 dark:text-slate-700">|</span>
+      <span class="text-amber-600 dark:text-amber-400 font-semibold" title="มอเตอร์ไซค์">🏍️ ${mcPct}%</span>
+      <span class="text-slate-300 dark:text-slate-700">|</span>
+      <span class="text-purple-600 dark:text-purple-400 font-semibold" title="รถเมล์/โดยสาร">🚌 ${busPct}%</span>
+      <span class="text-slate-300 dark:text-slate-700">|</span>
+      <span class="text-rose-600 dark:text-rose-400 font-semibold" title="รถบรรทุก/ใหญ่">🚛 ${truckPct}%</span>
+    `;
+  }
+
+  // 2. Filter roads
+  const filter = roadAnalyticsState.filter;
+  const q = (roadAnalyticsState.query || '').trim().toLowerCase();
+
+  const filtered = roads.filter(road => {
+    if (filter !== 'all' && road.status.key !== filter) return false;
+    if (q) {
+      const matchName = (road.name || '').toLowerCase().includes(q);
+      const matchZone = (road.zone || '').toLowerCase().includes(q);
+      const matchChoke = (road.dischargeStrategy?.chokePoints || []).some(cp => cp.toLowerCase().includes(q));
+      if (!matchName && !matchZone && !matchChoke) return false;
+    }
+    return true;
+  });
+
+  const listEl = el('analytics-road-list');
+  const emptyEl = el('analytics-empty');
+
+  if (emptyEl) emptyEl.classList.toggle('hidden', filtered.length > 0);
+  if (!listEl) return;
+
+  // Render cards
+  listEl.innerHTML = filtered.map(road => {
+    const activeClip = roadAnalyticsState.selectedClipPerRoad[road.id] || (road.latestClip ? road.latestClip.clipUrl : null);
+    
+    const isJam = road.status.key === 'jam';
+    const isSlow = road.status.key === 'slow';
+    const statusBg = isJam ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30' 
+                   : isSlow ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                   : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
+
+    const trendIcon = road.stats.trendDirection === 'up' ? '▲' : road.stats.trendDirection === 'down' ? '▼' : '━';
+    const trendColor = road.stats.trendDirection === 'up' ? 'text-rose-500' : road.stats.trendDirection === 'down' ? 'text-emerald-500' : 'text-slate-400';
+    const trendText = road.stats.trendDirection === 'up' ? `+${road.stats.trendPct}% (เพิ่มขึ้น)` 
+                    : road.stats.trendDirection === 'down' ? `${road.stats.trendPct}% (คลี่คลาย)` 
+                    : 'คงที่';
+
+    const maxTimelineTotal = Math.max(1, ...(road.timeline || []).map(t => t.total));
+
+    return `
+      <div id="road-card-${cssId(road.id)}" data-road-id="${escapeHtml(road.id)}" class="p-4 sm:p-5 rounded-2xl bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-300 dark:border-slate-800 shadow-md space-y-4 hover:border-slate-400 dark:hover:border-slate-700 transition-all">
+        
+        <!-- Card Header -->
+        <div class="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 dark:border-slate-800/80 pb-3">
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold border ${statusBg} flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full ${isJam ? 'bg-rose-500 animate-pulse' : isSlow ? 'bg-amber-500' : 'bg-emerald-500'}"></span>
+                <span>${road.status.label}</span>
+              </span>
+              <span class="text-[11px] font-medium text-slate-500 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800">${road.zone}</span>
+            </div>
+            <h3 class="text-base font-bold text-slate-900 dark:text-white leading-snug">${road.name}</h3>
+          </div>
+
+          <!-- Trend Indicator -->
+          <div class="text-right">
+            <div class="text-[11px] text-slate-400">แนวโน้ม 10 นาที</div>
+            <div class="text-xs font-bold ${trendColor} flex items-center gap-1 justify-end">
+              <span>${trendIcon}</span>
+              <span>${trendText}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 10-Minute Video Player with Switchers -->
+        <div class="space-y-2">
+          <!-- Video Control Bar: Camera & Clip Switchers -->
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <!-- Camera Selector -->
+            <div class="flex items-center gap-1.5 flex-1 min-w-[180px]">
+              <span class="text-[11px] text-slate-400 font-medium shrink-0">จุดกล้อง:</span>
+              <select class="analytics-cam-select ctl !h-7 !py-0 !text-[11px] w-full rounded-lg bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700" data-road-id="${road.id}">
+                ${(road.cameraDetails || []).map(cam => `
+                  <option value="${cam.id}" ${cam.id === (roadAnalyticsState.selectedCameraPerRoad[road.id] || road.cameras[0]) ? 'selected' : ''}>
+                    ${cam.title} (${cam.clipCount} คลิป)
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+
+            <!-- Clip Selector -->
+            <div class="flex items-center gap-1.5 flex-1 min-w-[180px]">
+              <span class="text-[11px] text-slate-400 font-medium shrink-0">คลิป 10 นาที:</span>
+              <select class="analytics-clip-select ctl !h-7 !py-0 !text-[11px] w-full rounded-lg bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700" data-road-id="${road.id}">
+                ${(road.availableClips || []).map(c => `
+                  <option value="${c.clipUrl}" ${c.clipUrl === activeClip ? 'selected' : ''}>
+                    รอบ ${c.timeTh} (รวม ${c.total} คัน)
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+          </div>
+
+          <!-- Video Element -->
+          <div class="relative rounded-xl overflow-hidden bg-black aspect-video border border-slate-800 shadow-inner group">
+            ${activeClip ? `
+              <video id="video-road-${road.id}" src="${activeClip}" controls playsinline preload="metadata" class="w-full h-full object-contain"></video>
+            ` : `
+              <div class="w-full h-full flex flex-col items-center justify-center text-slate-500 text-xs gap-2">
+                <svg class="w-8 h-8 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                <span>ไม่มีคลิปวิดีโอในรอบที่เลือก</span>
+              </div>
+            `}
+            <div class="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/75 backdrop-blur-md text-[10px] font-mono text-white pointer-events-none flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+              <span>Drive D (10-min clip)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vehicle Classification & Numbers -->
+        <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800/80 space-y-2.5">
+          <div class="flex items-center justify-between text-xs font-semibold">
+            <span class="text-slate-700 dark:text-slate-300">📊 ตัวเลขสถิติรถยนต์และแยกประเภท</span>
+            <span class="text-rose-600 dark:text-rose-400 font-bold">
+              ${road.stats.latest10MinVolume} คัน/10 นาที (~${road.stats.hourlyFlowEst} คัน/ชม.)
+            </span>
+          </div>
+
+          <!-- Distribution Stacked Bar -->
+          <div class="w-full h-2 rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-700">
+            <div class="bg-sky-500 h-full" style="width: ${road.stats.percentages.car}%" title="รถยนต์ส่วนบุคคล ${road.stats.percentages.car}%"></div>
+            <div class="bg-amber-500 h-full" style="width: ${road.stats.percentages.motorcycle}%" title="มอเตอร์ไซค์ ${road.stats.percentages.motorcycle}%"></div>
+            <div class="bg-purple-500 h-full" style="width: ${road.stats.percentages.bus}%" title="รถโดยสาร/รถเมล์ ${road.stats.percentages.bus}%"></div>
+            <div class="bg-rose-500 h-full" style="width: ${road.stats.percentages.truck}%" title="รถบรรทุก ${road.stats.percentages.truck}%"></div>
+          </div>
+
+          <!-- Vehicle Type Grid -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div class="text-[10px] text-slate-400">🚗 รถเก๋ง/กระบะ</div>
+              <div class="font-bold text-sky-600 dark:text-sky-400 mt-0.5">
+                ${road.stats.counts.car.toLocaleString('th-TH')} <span class="text-[10px] font-normal text-slate-500">(${road.stats.percentages.car}%)</span>
+              </div>
+            </div>
+            <div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div class="text-[10px] text-slate-400">🏍️ มอเตอร์ไซค์</div>
+              <div class="font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                ${road.stats.counts.motorcycle.toLocaleString('th-TH')} <span class="text-[10px] font-normal text-slate-500">(${road.stats.percentages.motorcycle}%)</span>
+              </div>
+            </div>
+            <div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div class="text-[10px] text-slate-400">🚌 รถเมล์/โดยสาร</div>
+              <div class="font-bold text-purple-600 dark:text-purple-400 mt-0.5">
+                ${road.stats.counts.bus.toLocaleString('th-TH')} <span class="text-[10px] font-normal text-slate-500">(${road.stats.percentages.bus}%)</span>
+              </div>
+            </div>
+            <div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div class="text-[10px] text-slate-400">🚛 รถบรรทุก/ใหญ่</div>
+              <div class="font-bold text-rose-600 dark:text-rose-400 mt-0.5">
+                ${road.stats.counts.truck.toLocaleString('th-TH')} <span class="text-[10px] font-normal text-slate-500">(${road.stats.percentages.truck}%)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 10-Minute Historical Trend Chart -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+            <span>📈 แนวโน้มปริมาณรถย้อนหลัง (คลิกที่แท่งเพื่อเปิดวิดีโอรอบนั้น)</span>
+            <span class="text-[10px]">รวมบันทึก ${road.stats.totalVehicles.toLocaleString('th-TH')} คัน</span>
+          </div>
+
+          <div class="h-16 flex items-end gap-1.5 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800/80 overflow-x-auto no-scrollbar">
+            ${(road.timeline || []).map(item => {
+              const h = Math.max(10, Math.round((item.total / maxTimelineTotal) * 44));
+              const isSelected = item.clipUrl === activeClip;
+              const barColor = isSelected ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-700 hover:bg-rose-400';
+              return `
+                <button class="analytics-timeline-bar flex-1 min-w-[20px] h-full flex flex-col justify-end items-center group relative cursor-pointer" data-road-id="${road.id}" data-clip-url="${item.clipUrl}">
+                  <div class="w-full ${barColor} rounded-t transition-colors" style="height: ${h}px"></div>
+                  <span class="text-[8px] text-slate-400 truncate w-full text-center mt-1">${item.time.slice(0, 5)}</span>
+                  
+                  <!-- Tooltip -->
+                  <div class="absolute bottom-full mb-1 hidden group-hover:block z-20 px-2 py-1 rounded bg-slate-900 text-white text-[10px] whitespace-nowrap shadow-lg pointer-events-none">
+                    ${item.time} น.: ${item.total} คัน (เก๋ง ${item.car}, มอเตอร์ไซค์ ${item.motorcycle}, บรรทุก ${item.truck})
+                  </div>
+                </button>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        <!-- Traffic Assessment & Alternative Bypass -->
+        <div class="p-3.5 rounded-xl border ${isJam ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/50' : isSlow ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/50' : 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50'} space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+              <span>📍 การประเมินสภาพจราจร:</span>
+              <span class="${isJam ? 'text-rose-600 dark:text-rose-400' : isSlow ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}">
+                ${road.status.label} (${road.stats.latest10MinVolume} คัน/10 นาที)
+              </span>
+            </div>
+            <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-white/80 dark:bg-slate-900 shadow-sm text-slate-600 dark:text-slate-300 shrink-0">
+              ${isJam ? 'หนาแน่นสะสม' : isSlow ? 'ชะลอตัวปานกลาง' : 'การสัญจรคล่องตัว'}
+            </span>
+          </div>
+
+          <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            ${isJam ? `มีปริมาณรถสะสมหนาแน่นในรอบ 10 นาทีล่าสุด (~${road.stats.hourlyFlowEst} คัน/ชม.) แถวคอยสะสมตามแยกหลัก แนะนำตรวจสอบเส้นทางเลี่ยง` 
+              : isSlow ? `ปริมาณรถเริ่มชะลอตัวสะสม (~${road.stats.hourlyFlowEst} คัน/ชม.) เคลื่อนตัวได้ตามจังหวะสัญญาณไฟ` 
+              : `การจราจรไหลลื่นต่อเนื่อง (~${road.stats.hourlyFlowEst} คัน/ชม.) สัญจรได้คล่องตัว`}
+          </p>
+
+          <!-- Choke points -->
+          ${(road.dischargeStrategy.chokePoints || []).length ? `
+            <div class="flex items-center gap-1.5 flex-wrap text-[11px] pt-1">
+              <span class="text-slate-400 font-medium">จุดคอขวด:</span>
+              ${road.dischargeStrategy.chokePoints.map(cp => `
+                <span class="px-2 py-0.5 rounded-md bg-white/70 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 text-[10.5px]">
+                  ⚠️ ${cp}
+                </span>
+              `).join('')}
+            </div>
+          ` : ''}
+
+          <!-- Bypass Route & Maps Link -->
+          <div class="pt-2 border-t border-slate-200/60 dark:border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
+            <div class="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
+              <span>🛣️ ทางเลี่ยง:</span>
+              <span class="font-medium text-slate-700 dark:text-slate-200">${road.dischargeStrategy.bypassRoute}</span>
+            </div>
+
+            <a href="${road.dischargeStrategy.mapsUrl}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer shadow-sm shadow-emerald-600/20 shrink-0">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              <span>เปิด Google Maps</span>
+            </a>
+          </div>
+        </div>
+
+      </div>
+    `;
+  }).join('');
+
+  // 3. Bind events for Card elements
+  // Camera switcher
+  listEl.querySelectorAll('.analytics-cam-select').forEach(sel => {
+    sel.addEventListener('change', (e) => {
+      const roadId = e.target.dataset.roadId;
+      const camId = e.target.value;
+      roadAnalyticsState.selectedCameraPerRoad[roadId] = camId;
+      
+      const r = roads.find(x => x.id === roadId);
+      if (r) {
+        const camObj = (r.cameraDetails || []).find(c => c.id === camId);
+        if (camObj && camObj.latestClip) {
+          roadAnalyticsState.selectedClipPerRoad[roadId] = camObj.latestClip.clipUrl;
+        }
+      }
+      renderRoadAnalytics(roadAnalyticsState.data);
+    });
+  });
+
+  // Clip switcher
+  listEl.querySelectorAll('.analytics-clip-select').forEach(sel => {
+    sel.addEventListener('change', (e) => {
+      const roadId = e.target.dataset.roadId;
+      const clipUrl = e.target.value;
+      roadAnalyticsState.selectedClipPerRoad[roadId] = clipUrl;
+      const vid = el(`video-road-${roadId}`);
+      if (vid) {
+        vid.src = clipUrl;
+        vid.play().catch(() => {});
+      }
+    });
+  });
+
+  // Timeline bar clicks
+  listEl.querySelectorAll('.analytics-timeline-bar').forEach(bar => {
+    bar.addEventListener('click', () => {
+      const roadId = bar.dataset.roadId;
+      const clipUrl = bar.dataset.clipUrl;
+      if (!clipUrl) return;
+      roadAnalyticsState.selectedClipPerRoad[roadId] = clipUrl;
+      const vid = el(`video-road-${roadId}`);
+      if (vid) {
+        vid.src = clipUrl;
+        vid.play().catch(() => {});
+      }
+      const sel = listEl.querySelector(`.analytics-clip-select[data-road-id="${roadId}"]`);
+      if (sel) sel.value = clipUrl;
+    });
+  });
+}
+
+function initRoadAnalyticsListeners() {
+  // Day filter buttons
+  document.querySelectorAll('.analytics-day-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      loadRoadAnalytics(btn.dataset.day);
+    });
+  });
+
+  // Refresh button
+  const refreshBtn = el('btn-refresh-analytics');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      loadRoadAnalytics(roadAnalyticsState.day, true);
+    });
+  }
+
+  // Filter buttons (all, jam, slow, flowing)
+  document.querySelectorAll('.analytics-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.analytics-filter-btn').forEach(b => {
+        b.classList.remove('bg-rose-600', 'text-white', 'is-active');
+        b.classList.add('bg-slate-200', 'dark:bg-slate-800', 'text-slate-700', 'dark:text-slate-300');
+      });
+      btn.classList.remove('bg-slate-200', 'dark:bg-slate-800', 'text-slate-700', 'dark:text-slate-300');
+      btn.classList.add('bg-rose-600', 'text-white', 'is-active');
+
+      roadAnalyticsState.filter = btn.dataset.filter;
+      renderRoadAnalytics(roadAnalyticsState.data);
+    });
+  });
+
+  // Search input
+  const searchInput = el('analytics-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      roadAnalyticsState.query = e.target.value;
+      renderRoadAnalytics(roadAnalyticsState.data);
+    });
   }
 }
 
@@ -1480,6 +2422,8 @@ function startClock() {
     if (c) c.textContent = timeStr;
     const sc = el('sidebar-clock');
     if (sc) sc.textContent = timeStr;
+    const dc = el('dash-clock');
+    if (dc) dc.textContent = timeStr + ' น.';
   };
   tick();
   setInterval(tick, 1000);
@@ -1661,7 +2605,7 @@ async function sendChatMessage(query, selectedCamId = '') {
       appendChatMessage('assistant', data.reply);
       chatState.history.push({ role: 'assistant', content: data.reply });
       if (data.mode === 'gemini') {
-        updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+        updateChatModeBadge('Gemini 2.0 Lite', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-sm shadow-purple-500/30');
       }
     }
   } catch (err) {
@@ -1762,7 +2706,7 @@ function initChatbot() {
 
   if (apiKeyInput && chatState.apiKey) {
     apiKeyInput.value = chatState.apiKey;
-    updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+    updateChatModeBadge('Gemini 2.0 Lite', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-sm shadow-purple-500/30');
   }
 
   if (settingsBtn && settingsPanel) {
@@ -1777,9 +2721,9 @@ function initChatbot() {
       chatState.apiKey = key;
       localStorage.setItem('bkk_gemini_api_key', key);
       if (key) {
-        updateChatModeBadge('Gemini Flash', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white');
+        updateChatModeBadge('Gemini 2.0 Lite', 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-sm shadow-purple-500/30');
       } else {
-        updateChatModeBadge('Built-in AI', 'bg-purple-500/15 text-purple-600 dark:text-purple-300');
+        updateChatModeBadge('Built-in Map AI', 'bg-purple-500/15 text-purple-600 dark:text-purple-300');
       }
       if (settingsPanel) settingsPanel.classList.add('hidden');
     });
@@ -1787,19 +2731,23 @@ function initChatbot() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initAlerts();
   showBuild();
   startClock();
   setGridLayout(state.gridCols);
   updateWatchlistBadges();
   loadCameras();
-  loadAdvice();
   loadTrafficIndex();
+  loadTrafficData();
+  loadRoadAnalytics('latest');
   initChatbot();
+  initRoadAnalyticsListeners();
+  switchView('dashboard');
 
   const btn = el('btn-refresh');
-  if (btn) btn.addEventListener('click', () => { loadCameras(); loadAdvice(); loadTrafficIndex(); });
+  if (btn) btn.addEventListener('click', () => { loadCameras(); loadTrafficIndex(); loadTrafficData(); loadRoadAnalytics(roadAnalyticsState.day, true); });
   const mBtn = el('mobile-btn-refresh');
-  if (mBtn) mBtn.addEventListener('click', () => { loadCameras(); loadAdvice(); loadTrafficIndex(); });
+  if (mBtn) mBtn.addEventListener('click', () => { loadCameras(); loadTrafficIndex(); loadTrafficData(); loadRoadAnalytics(roadAnalyticsState.day, true); });
 
   // Sidebar and Mobile navigation tabs
   document.querySelectorAll('[data-view-target]').forEach(btn => {
@@ -1816,9 +2764,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const b = el(`grid-cols-${cols}`);
     if (b) b.addEventListener('click', () => setGridLayout(cols));
   });
-
-  const adviceBtn = el('advice-refresh');
-  if (adviceBtn) adviceBtn.addEventListener('click', loadAdvice);
 
   const search = el('search');
   if (search) search.addEventListener('input', applyFilter);
@@ -1846,7 +2791,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (mTheme) mTheme.addEventListener('click', toggleTheme);
 
   setInterval(() => { if (state.view === 'map') loadTrafficIndex(); }, 60000);
-  setInterval(() => { if (state.view === 'advice') loadAdvice(); }, ADVICE_REFRESH_MS);
+  setInterval(() => { if (state.view === 'dashboard') { loadTrafficIndex(); loadTrafficData(); loadRoadAnalytics(roadAnalyticsState.day); } }, 60000);
 
   el('detail-close').addEventListener('click', closeDetail);
   el('detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
@@ -1855,34 +2800,86 @@ document.addEventListener('DOMContentLoaded', () => {
   if (el('detail-tab-rec')) el('detail-tab-rec').addEventListener('click', () => setDetailMode('rec'));
   const detailPip = el('detail-pip-btn');
   if (detailPip) detailPip.addEventListener('click', () => togglePiP(el('detail-video')));
+  const detailFsBtn = el('detail-fullscreen-btn');
+  if (detailFsBtn) {
+    detailFsBtn.addEventListener('click', () => {
+      const container = el('detail-player-container');
+      if (!container) return;
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else if (container.requestFullscreen) {
+        container.requestFullscreen().catch(() => {});
+      } else if (container.webkitRequestFullscreen) {
+        container.webkitRequestFullscreen();
+      }
+    });
+  }
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.detail) closeDetail(); });
 
   const overlayBtn = el('btn-overlay');
   if (overlayBtn) {
     const paint = () => {
-      overlayBtn.textContent = state.showOverlay ? 'ซ่อนกรอบ AI' : 'แสดงกรอบ AI';
-      overlayBtn.classList.toggle('is-on', state.showOverlay);
+      overlayBtn.innerHTML = `
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M3 9h2m-2 6h2m14-6h2m-2 6h2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+        <span>${state.showGridOverlay ? 'ซ่อนกรอบในเมนู' : 'แสดงกรอบในเมนู'}</span>
+      `;
+      overlayBtn.classList.toggle('is-on', state.showGridOverlay);
     };
     paint();
     overlayBtn.addEventListener('click', () => {
-      state.showOverlay = !state.showOverlay;
-      localStorage.setItem('showOverlay', state.showOverlay ? '1' : '0');
+      state.showGridOverlay = !state.showGridOverlay;
+      localStorage.setItem('showGridOverlay', state.showGridOverlay ? '1' : '0');
       paint();
       redrawAllBoxes();
     });
   }
+
+  const detailOverlayBtn = el('detail-overlay-btn');
+  if (detailOverlayBtn) {
+    const paintDetailOverlay = () => {
+      detailOverlayBtn.classList.toggle('is-on', state.showDetailOverlay);
+      detailOverlayBtn.classList.toggle('bg-rose-600', state.showDetailOverlay);
+      detailOverlayBtn.classList.toggle('text-white', state.showDetailOverlay);
+      const lbl = el('detail-overlay-label');
+      if (lbl) lbl.textContent = state.showDetailOverlay ? 'ซ่อนกรอบ AI' : 'แสดงกรอบ AI';
+    };
+    paintDetailOverlay();
+    detailOverlayBtn.addEventListener('click', () => {
+      state.showDetailOverlay = !state.showDetailOverlay;
+      localStorage.setItem('showDetailOverlay', state.showDetailOverlay ? '1' : '0');
+      paintDetailOverlay();
+      redrawAllBoxes();
+    });
+  }
   window.addEventListener('resize', () => redrawAllBoxes());
-  document.addEventListener('fullscreenchange', () => setTimeout(redrawAllBoxes, 200));
-  document.addEventListener('webkitfullscreenchange', () => setTimeout(redrawAllBoxes, 200));
+  const onFsChange = () => {
+    setTimeout(redrawAllBoxes, 50);
+    setTimeout(redrawAllBoxes, 200);
+    setTimeout(redrawAllBoxes, 500);
+  };
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
 
   loadDetections();
   setInterval(() => {
     if (state.view !== 'cams') return;
     loadDetections();
-  }, 3000);
+  }, 2000);
 
   loadRecordings();
   setInterval(() => {
     if (state.view === 'cams') loadRecordings();
   }, 10000);
+
+  // Browser Autoplay Policy Unblocker: Ensure all videos play on first user interaction
+  const unblockVideos = () => {
+    document.querySelectorAll('video').forEach(v => {
+      if (v.paused && v.src) {
+        v.muted = true;
+        v.play().catch(() => {});
+      }
+    });
+  };
+  document.addEventListener('click', unblockVideos, { once: true });
+  document.addEventListener('touchstart', unblockVideos, { once: true });
 });

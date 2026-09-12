@@ -280,17 +280,46 @@ function listRecordings(forceFresh = false) {
       }
     } catch (e) {}
 
+    const latestFile = path.join(dir, newest, path.basename(clips[clips.length - 1]));
+    let mtime = 0;
+    try {
+      mtime = fs.statSync(latestFile).mtimeMs;
+    } catch (e) {}
+
+    let isWriting = false;
+    try {
+      const subdirs = fs.readdirSync(dir, { withFileTypes: true });
+      for (const sub of subdirs) {
+        if (sub.isDirectory()) {
+          const files = fs.readdirSync(path.join(dir, sub.name));
+          if (files.some(f => f.includes('.writing.'))) {
+            isWriting = true;
+            break;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const ageMinutes = mtime > 0 ? Math.round((Date.now() - mtime) / 60000) : 999999;
+    // A clip is considered fresh if it finished within the last 25 minutes
+    const isFresh = ageMinutes <= 25;
+
     out.push({
       id: entry.name,
       day: newest,
       clips,
       latest: clips[clips.length - 1],
       lastCount,
+      mtime,
+      ageMinutes,
+      isFresh,
+      isWriting,
       days: dayNames.map(d => ({ day: d, clips: byDay.get(d).length }))
         .sort((a, b) => a.day < b.day ? 1 : -1)
     });
   }
-  const data = { dir: RECORDINGS_DIR, recording: out.length > 0, cameras: out };
+  const isRecordingActive = out.some(c => c.isWriting || c.isFresh);
+  const data = { dir: RECORDINGS_DIR, recording: isRecordingActive, cameras: out };
   recordingsCache = { at: Date.now(), data };
   return data;
 }
@@ -356,6 +385,411 @@ function sendPlaceholder(res) {
     'X-Frame-Source': 'unavailable'
   });
   res.end(PLACEHOLDER_SVG);
+}
+
+// =============================================================================
+// ROAD TRAFFIC ANALYTICS SYSTEM (Drive D 10-Minute Video & Vehicle AI Aggregator)
+// =============================================================================
+
+const CAMERA_TITLES = {
+  'DOH-PER-3-008': 'วิภาวดีรังสิต ดอนเมือง (มุ่งหน้าหลักสี่)',
+  'DOHBHS0016': 'วิภาวดีรังสิต ดอนเมือง (ขาออก)',
+  'ITICM_BMAMI0071': 'พระราม 4 (แยกทางด่วนพระราม 4 - มุม 1)',
+  'ITICM_BMAMI0074': 'พระราม 4 (แยกทางด่วนพระราม 4 - มุม 2)',
+  'ITICM_BMAMI0164': 'รัชดาภิเษก - วงศ์สว่าง',
+  'ITICM_BMAMI0166': 'MRT วงศ์สว่าง',
+  'ITICM_BMAMI0188': 'แยกประชานิเวศน์',
+  'ITICM_BMAMI0210': 'ประชานุกูลไปแยกประชาชื่น',
+  'ITICM_BMAMI0211': 'ประชานุกูลไปต่างระดับรัชวิภา',
+  'ITICM_BMAMI0212': 'ประชานุกูลไปแยกประชานิเวศน์',
+  'ITICM_BMAMI0213': 'ประชานุกูลไปวงศ์สว่าง',
+  'ITICM_BMAMI0076': 'สาทร หน้าสถานทูตเยอรมนี',
+  'ITICM_BMAMI0080': 'เชิงสะพานตากสิน (จุดกลับรถใต้สะพาน)',
+  'ITICM_BMAMI0081': 'เชิงสะพานตากสิน (มุ่งหน้าถนนสาทร)',
+  'ITICM_BMAMI0292': 'พระราม 2 (หน้า รพ.บางปะกอก 9 - มุม 1)',
+  'ITICM_BMAMI0293': 'พระราม 2 (หน้า รพ.บางปะกอก 9 - มุม 2)',
+  'ITICM_BMAMI0208': 'บางนา-ตราด กม.3 (ทิศทางขาออก)',
+  'ITICM_BMAMI0209': 'บางนา-ตราด กม.3 (ทิศทางขาเข้า)',
+  'DOH-PER-3-009': 'บางนา-บางปะกง กม.6 (มุ่งหน้าบางนา)',
+  'DOH-PER-3-009-out': 'บางนา-บางปะกง กม.6 (มุ่งหน้าบางปะกง)',
+  'ITICM_BMAMI0165': 'บางนา-ตราด (ทางร่วมต่างระดับ)',
+  'DOH-PER-3-006': 'กาญจนาภิเษก บางใหญ่ (มุ่งหน้าบางแค)',
+  'DOH-PER-3-006-out': 'กาญจนาภิเษก บางใหญ่ (มุ่งหน้าบางบัวทอง)',
+  'DOH-PER-9-026-out': 'ทล.302 เมืองนนทบุรี (มุ่งหน้าออกบางใหญ่)',
+  'DOH-PER-12-015': 'ทล.303 ราษฎร์บูรณะ (มุ่งหน้าพระประแดง)',
+  'DOH-PER-12-015-out': 'ทล.303 ราษฎร์บูรณะ (มุ่งหน้าบางปลา)',
+  'DOH-PER-12-016': 'ทล.3310 พุทธมณฑล (มุ่งหน้ากระทุ่มล้ม)',
+  'DOH-PER-12-016-out': 'ทล.3310 พุทธมณฑล (มุ่งหน้าพุทธมณฑล)',
+  'DOH-PER-3-017': 'ลำลูกกา กม.9 (มุ่งหน้า ถ.พหลโยธิน)',
+  'DOH-PER-4-016': 'เพชรเกษม - บรมราชชนนี (สายตะวันตก)'
+};
+
+const ROAD_CORRIDORS = [
+  {
+    id: 'vibhavadi',
+    name: 'ถนนวิภาวดีรังสิต (ดอนเมือง - ดินแดง)',
+    nameEn: 'Vibhavadi Rangsit Rd',
+    zone: 'กรุงเทพฯ ตอนเหนือ',
+    cameras: ['DOH-PER-3-008', 'DOHBHS0016'],
+    chokePoints: ['หน้าสนามบินดอนเมือง', 'แยกหลักสี่ (ตัดแจ้งวัฒนะ)', 'จุดเบี่ยงเข้าดอนเมืองโทลล์เวย์'],
+    bypassRoute: 'ทางยกระดับอุตราภิมุข (ดอนเมืองโทลล์เวย์) หรือ ถ.กำแพงเพชร 6 (Local Road เลียบทางรถไฟ)',
+    mapsQuery: 'Don Mueang Toll Way Bangkok'
+  },
+  {
+    id: 'rama4',
+    name: 'ถนนพระราม 4 (ทางด่วนพระราม 4 - คลองเตย)',
+    nameEn: 'Rama IV Rd',
+    zone: 'ใจกลางเมือง (CBD)',
+    cameras: ['ITICM_BMAMI0071', 'ITICM_BMAMI0074'],
+    chokePoints: ['แยกทางด่วนพระราม 4 (ใต้สะพานไทย-เบลเยี่ยม)', 'แยกเกษมราษฎร์ (โลตัสพระราม 4)', 'แยกคลองเตย'],
+    bypassRoute: 'ถนนพระราม 3 หรือ ถนนอาจณรงค์ เลียบทางรถไฟสายเก่า',
+    mapsQuery: 'Rama IV Road Bangkok'
+  },
+  {
+    id: 'ratchada',
+    name: 'ถนนรัชดาภิเษก - วงศ์สว่าง - ประชานุกูล - รัชวิภา',
+    nameEn: 'Ratchadaphisek Rd (Wong Sawang - Prachanukul)',
+    zone: 'กรุงเทพฯ ตอนเหนือ-ตะวันตก',
+    cameras: ['ITICM_BMAMI0164', 'ITICM_BMAMI0166', 'ITICM_BMAMI0188', 'ITICM_BMAMI0210', 'ITICM_BMAMI0211', 'ITICM_BMAMI0212', 'ITICM_BMAMI0213'],
+    chokePoints: ['แยกประชานุกูล (ตัด ถ.ประชาชื่น)', 'ต่างระดับรัชวิภา มุ่งหน้าวิภาวดี', 'สี่แยกวงศ์สว่าง'],
+    bypassRoute: 'ถนนประชาชื่น เลียบคลองประปา หรือ ใช้ทางพิเศษศรีรัช ด่านรัชดาภิเษก',
+    mapsQuery: 'Prachanukul Junction Bangkok'
+  },
+  {
+    id: 'sathorn',
+    name: 'ถนนสาทร - สะพานสมเด็จพระเจ้าตากสิน',
+    nameEn: 'Sathorn Rd - Taksin Bridge',
+    zone: 'ใจกลางเมือง (CBD) / ฝั่งธนบุรี',
+    cameras: ['ITICM_BMAMI0076', 'ITICM_BMAMI0080', 'ITICM_BMAMI0081'],
+    chokePoints: ['เชิงสะพานตากสินฝั่งพระนคร (จุดกลับรถใต้สะพาน)', 'แยกสาทร-สุรศักดิ์', 'แยกสาทร-นราธิวาส'],
+    bypassRoute: 'สะพานพระราม 3 หรือ สะพานพระปกเกล้า ข้ามแม่น้ำเจ้าพระยา',
+    mapsQuery: 'Taksin Bridge Bangkok'
+  },
+  {
+    id: 'rama2',
+    name: 'ถนนพระราม 2 - บางปะกอก - สุขสวัสดิ์',
+    nameEn: 'Rama II Rd - Bangpakok',
+    zone: 'กรุงเทพฯ ตอนใต้ (ธนบุรี)',
+    cameras: ['ITICM_BMAMI0292', 'ITICM_BMAMI0293'],
+    chokePoints: ['หน้า รพ.บางปะกอก 9 (กม.1)', 'ทางขึ้นทางด่วนดาวคะนอง', 'แยกบางปะแก้ว'],
+    bypassRoute: 'ถนนเอกชัย เชื่อมถนนกัลปพฤกษ์ หรือ ถนนพุทธบูชา เลี่ยงทางราบพระราม 2',
+    mapsQuery: 'Bangpakok 9 Hospital Bangkok'
+  },
+  {
+    id: 'bangna',
+    name: 'ถนนบางนา-ตราด - เทพรัตน (กม.0 - กม.6)',
+    nameEn: 'Bang Na - Trat / Thepharat Rd',
+    zone: 'กรุงเทพฯ ตะวันออก (สมุทรปราการ)',
+    cameras: ['ITICM_BMAMI0208', 'ITICM_BMAMI0209', 'DOH-PER-3-009', 'DOH-PER-3-009-out', 'ITICM_BMAMI0165'],
+    chokePoints: ['สี่แยกบางนา (จุดตัดสุขุมวิท)', 'บางนา-ตราด กม.6 (หน้าเซ็นทรัล)', 'ทางเชื่อมเมกาบางนา'],
+    bypassRoute: 'ทางพิเศษบูรพาวิถี (ทางยกระดับบางนา) หรือ ถนนศรีนครินทร์',
+    mapsQuery: 'Bangna Trat Road km 6'
+  },
+  {
+    id: 'kanchana',
+    name: 'ถนนกาญจนาภิเษก - บางใหญ่ (วงแหวนรอบนอกตะวันตก)',
+    nameEn: 'Kanchanaphisek Rd - Bang Yai (M9)',
+    zone: 'นนทบุรี - ตะวันตก',
+    cameras: ['DOH-PER-3-006', 'DOH-PER-3-006-out', 'DOH-PER-9-026-out'],
+    chokePoints: ['จุดตัดถนนรัตนาธิเบศร์ (สามแยกบางใหญ่ หน้าเวสต์เกต)', 'ต่างระดับบางคูเวียง', 'จุดเข้าช่องทางหลัก/ทางขนาน'],
+    bypassRoute: 'ถนนราชพฤกษ์ หรือ ถนนนครอินทร์ มุ่งหน้าสะพานพระราม 5',
+    mapsQuery: 'Central Westgate Bang Yai'
+  },
+  {
+    id: 'phrapradaeng',
+    name: 'ถนนราษฎร์บูรณะ - สุขสวัสดิ์ - พระประแดง (ทล.303)',
+    nameEn: 'Rat Burana - Suksawat - Phra Pradaeng (Hwy 303)',
+    zone: 'สมุทรปราการ / ธนบุรีใต้',
+    cameras: ['DOH-PER-12-015', 'DOH-PER-12-015-out'],
+    chokePoints: ['สามแยกพระประแดง', 'หน้า อบต.บางปลา', 'ทางตัดถนนประชาอุทิศ'],
+    bypassRoute: 'ถนนประชาอุทิศ เชื่อมถนนพุทธบูชา',
+    mapsQuery: 'Phra Pradaeng Samut Prakan'
+  },
+  {
+    id: 'phutthamonthon',
+    name: 'ถนนพุทธมณฑลสาย 4 - กระทุ่มล้ม (ทล.3310)',
+    nameEn: 'Phutthamonthon Sai 4 - Krathum Lom',
+    zone: 'นครปฐม - ตะวันตก',
+    cameras: ['DOH-PER-12-016', 'DOH-PER-12-016-out'],
+    chokePoints: ['แยกกระทุ่มล้ม (ตัด ถ.เพชรเกษม)', 'หน้าพุทธมณฑล', 'แยกสาครเกษม'],
+    bypassRoute: 'ถนนพุทธมณฑลสาย 3 หรือ ถนนพุทธมณฑลสาย 5',
+    mapsQuery: 'Phutthamonthon Sai 4'
+  },
+  {
+    id: 'lamlukka',
+    name: 'ถนนลำลูกกา - พหลโยธิน (กม.9)',
+    nameEn: 'Lam Luk Ka - Phahonyothin Rd',
+    zone: 'ปทุมธานี - ตอนเหนือ',
+    cameras: ['DOH-PER-3-017'],
+    chokePoints: ['ทางแยกตัด ถ.พหลโยธิน (สนามกีฬาธูปะเตมีย์)', 'จุดขึ้นลงทางด่วนกาญจนาภิเษก (วงแหวนตะวันออก)'],
+    bypassRoute: 'ถนนรังสิต-นครนายก หรือ ถนนสายไหม เลี่ยงเข้า ถ.พหลโยธิน',
+    mapsQuery: 'Lam Luk Ka km 9'
+  },
+  {
+    id: 'western_corridor',
+    name: 'ถนนเพชรเกษม - บรมราชชนนี (สายตะวันตก)',
+    nameEn: 'Phetkasem - Borommaratchachonnani',
+    zone: 'กรุงเทพฯ ตะวันตก / นครปฐม',
+    cameras: ['DOH-PER-4-016'],
+    chokePoints: ['แยกต่างระดับบางแค', 'ทางขึ้นคู่ขนานลอยฟ้าบรมราชชนนี'],
+    bypassRoute: 'ทางคู่ขนานลอยฟ้าบรมราชชนนี หรือ ถนนพรานนก-พุทธมณฑลสาย 4',
+    mapsQuery: 'Borommaratchachonnani Road'
+  }
+];
+
+let roadAnalyticsCache = { at: 0, day: null, data: null };
+const ROAD_ANALYTICS_TTL_MS = 15 * 1000;
+
+function buildRoadAnalytics(targetDay = null, forceFresh = false) {
+  if (!forceFresh && roadAnalyticsCache.data && (Date.now() - roadAnalyticsCache.at < ROAD_ANALYTICS_TTL_MS) && roadAnalyticsCache.day === targetDay) {
+    return roadAnalyticsCache.data;
+  }
+
+  const availableDays = new Set();
+  try {
+    const camDirs = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true });
+    for (const cam of camDirs) {
+      if (!cam.isDirectory() || !SAFE_SEGMENT.test(cam.name)) continue;
+      const camPath = path.join(RECORDINGS_DIR, cam.name);
+      for (const item of fs.readdirSync(camPath, { withFileTypes: true })) {
+        if (item.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(item.name)) {
+          availableDays.add(item.name);
+        }
+      }
+    }
+  } catch (err) {
+    return { error: 'cannot read CCTV directory', summary: {}, roads: [] };
+  }
+
+  const daysList = [...availableDays].sort();
+  const activeDay = (targetDay && targetDay !== 'all') ? targetDay : (daysList[daysList.length - 1] || '2026-09-11');
+
+  let globalTotal = 0;
+  let globalCounts = { car: 0, motorcycle: 0, bus: 0, truck: 0 };
+  let globalClips = 0;
+
+  const roadList = [];
+
+  for (const road of ROAD_CORRIDORS) {
+    let roadVehicles = 0;
+    let counts = { car: 0, motorcycle: 0, bus: 0, truck: 0 };
+    let clips = [];
+    const cameraDetails = [];
+
+    for (const camId of road.cameras) {
+      const camDir = path.join(RECORDINGS_DIR, camId);
+      const camTitle = CAMERA_TITLES[camId] || camId;
+      let camClipsCount = 0;
+      let camVehiclesCount = 0;
+      let camLatestClip = null;
+
+      if (fs.existsSync(camDir)) {
+        const csvFiles = fs.readdirSync(camDir).filter(f => f.endsWith('.csv')).sort();
+        for (const csvFile of csvFiles) {
+          const d = csvFile.replace('.csv', '');
+          if (targetDay !== 'all' && d !== activeDay) continue;
+
+          try {
+            const csvContent = fs.readFileSync(path.join(camDir, csvFile), 'utf8').trim();
+            const lines = csvContent.split('\n');
+            for (let i = 1; i < lines.length; i++) {
+              const row = lines[i].trim().split(',');
+              if (row.length < 6) continue;
+              const stamp = row[0];
+              const total = Number(row[1]) || 0;
+              const car = Number(row[2]) || 0;
+              const mc = Number(row[3]) || 0;
+              const bus = Number(row[4]) || 0;
+              const truck = Number(row[5]) || 0;
+
+              roadVehicles += total;
+              counts.car += car;
+              counts.motorcycle += mc;
+              counts.bus += bus;
+              counts.truck += truck;
+
+              camVehiclesCount += total;
+              camClipsCount += 1;
+
+              const mp4Path = path.join(camDir, d, stamp + '.mp4');
+              const hasMp4 = fs.existsSync(mp4Path);
+
+              const clipObj = {
+                day: d,
+                stamp,
+                timeTh: stamp.replace(/-/g, ':') + ' น.',
+                camId,
+                camTitle,
+                total,
+                car,
+                motorcycle: mc,
+                bus,
+                truck,
+                hasMp4,
+                clipUrl: hasMp4 ? ('/api/recording/' + camId + '/' + d + '/' + stamp + '.mp4') : null
+              };
+              clips.push(clipObj);
+              if (hasMp4) camLatestClip = clipObj;
+            }
+          } catch (e) {}
+        }
+      }
+
+      cameraDetails.push({
+        id: camId,
+        title: camTitle,
+        totalVehicles: camVehiclesCount,
+        clipCount: camClipsCount,
+        latestClip: camLatestClip
+      });
+    }
+
+    clips.sort((a, b) => (a.day + a.stamp).localeCompare(b.day + b.stamp));
+    const playableClips = clips.filter(c => c.hasMp4);
+    const latestClip = playableClips.length ? playableClips[playableClips.length - 1] : null;
+    const prevClip = playableClips.length > 1 ? playableClips[playableClips.length - 2] : null;
+
+    let trendPct = 0;
+    let trendDirection = 'steady';
+    if (latestClip && prevClip && prevClip.total > 0) {
+      trendPct = Math.round(((latestClip.total - prevClip.total) / prevClip.total) * 100);
+      if (trendPct > 8) trendDirection = 'up';
+      else if (trendPct < -8) trendDirection = 'down';
+    }
+
+    const latestVol = latestClip ? latestClip.total : 0;
+    const avgPerClip = clips.length ? Math.round(roadVehicles / clips.length) : 0;
+    const hourlyFlowEst = latestVol * 6;
+
+    let statusKey = 'flowing';
+    let statusLabel = 'คล่องตัว';
+    let statusColor = 'emerald';
+    let score = Math.min(100, Math.round((latestVol / 45) * 100));
+
+    if (latestVol >= 35 || score >= 70) {
+      statusKey = 'jam';
+      statusLabel = 'ติดขัดสะสม';
+      statusColor = 'rose';
+    } else if (latestVol >= 18 || score >= 40) {
+      statusKey = 'slow';
+      statusLabel = 'ชะลอตัว';
+      statusColor = 'amber';
+    }
+
+    // Vehicle breakdown percentages
+    const sumType = counts.car + counts.motorcycle + counts.bus + counts.truck || 1;
+    const pct = {
+      car: Math.round((counts.car / sumType) * 100),
+      motorcycle: Math.round((counts.motorcycle / sumType) * 100),
+      bus: Math.round((counts.bus / sumType) * 100),
+      truck: Math.round((counts.truck / sumType) * 100)
+    };
+
+    // Discharge strategy
+    let action = '';
+    let greenSec = 0;
+    let strategyDetail = '';
+    let priority = 'low';
+
+    if (statusKey === 'jam') {
+      priority = 'high';
+      greenSec = 30;
+      action = 'เร่งระบายรถทิศทางหลัก เพิ่มไฟเขียว +30 วินาที';
+      strategyDetail = 'ปริมาณรถในรอบ 10 นาทีล่าสุดอยู่ที่ ' + latestVol + ' คัน (ประมาณการ ' + hourlyFlowEst + ' คัน/ชม.) แนะนำเพิ่มรอบสัญญาณไฟเขียวในแกนหลัก +30 วินาที และหน่วงจังหวะไฟเลี้ยวจากทางโท/ซอยร่วม 15 วินาที เพื่อให้แถวคอยคลายตัว';
+    } else if (statusKey === 'slow') {
+      priority = 'medium';
+      greenSec = 15;
+      action = 'ขยายสัญญาณไฟเขียวแกนหลัก +15 วินาที (Green Wave)';
+      strategyDetail = 'ปริมาณรถเริ่มชะลอตัวสะสม (' + latestVol + ' คัน/10 นาที) ควรประสานสัญญาณไฟเขียวแบบ Green Wave กับทางแยกถัดไป เพื่อระบายรถอย่างต่อเนื่อง';
+    } else {
+      priority = 'normal';
+      greenSec = 0;
+      action = 'รักษารอบสัญญาณไฟตามปกติ';
+      strategyDetail = 'การจราจรไหลลื่นดี (' + latestVol + ' คัน/10 นาที) ควรรักษารอบไฟเดิมเพื่อไม่ให้เกิดผลกระทบต่อแยกข้างเคียง';
+    }
+
+    // Timeline for trend chart (up to last 12 intervals)
+    const timeline = playableClips.slice(-12).map(c => ({
+      time: c.timeTh.replace(' น.', ''),
+      stamp: c.stamp,
+      total: c.total,
+      car: c.car,
+      motorcycle: c.motorcycle,
+      truck: c.truck,
+      bus: c.bus,
+      clipUrl: c.clipUrl
+    }));
+
+    globalTotal += roadVehicles;
+    globalCounts.car += counts.car;
+    globalCounts.motorcycle += counts.motorcycle;
+    globalCounts.bus += counts.bus;
+    globalCounts.truck += counts.truck;
+    globalClips += clips.length;
+
+    roadList.push({
+      id: road.id,
+      name: road.name,
+      nameEn: road.nameEn,
+      zone: road.zone,
+      cameras: road.cameras,
+      cameraDetails,
+      status: {
+        key: statusKey,
+        label: statusLabel,
+        color: statusColor,
+        score
+      },
+      stats: {
+        totalVehicles: roadVehicles,
+        clipCount: clips.length,
+        avgPerClip,
+        latest10MinVolume: latestVol,
+        hourlyFlowEst,
+        trendPct,
+        trendDirection,
+        counts,
+        percentages: pct,
+        heavyRatioPct: pct.bus + pct.truck
+      },
+      dischargeStrategy: {
+        action,
+        greenSec,
+        priority,
+        detail: strategyDetail,
+        chokePoints: road.chokePoints,
+        bypassRoute: road.bypassRoute,
+        mapsUrl: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(road.mapsQuery)
+      },
+      latestClip,
+      timeline,
+      availableClips: playableClips.slice(-10).reverse()
+    });
+  }
+
+  // Sort roads by congestion score descending so most congested roads are top
+  roadList.sort((a, b) => b.status.score - a.status.score);
+
+  const data = {
+    updatedAt: Date.now(),
+    availableDays: daysList,
+    activeDay,
+    summary: {
+      totalRoads: roadList.length,
+      totalCameras: 30,
+      totalClips: globalClips,
+      totalVehicles: globalTotal,
+      counts: globalCounts,
+      jamCount: roadList.filter(r => r.status.key === 'jam').length,
+      slowCount: roadList.filter(r => r.status.key === 'slow').length,
+      flowingCount: roadList.filter(r => r.status.key === 'flowing').length,
+      topCongestedRoad: roadList.length ? roadList[0].name : ''
+    },
+    roads: roadList
+  };
+
+  roadAnalyticsCache = { at: Date.now(), day: targetDay, data };
+  return data;
 }
 
 
@@ -439,6 +873,24 @@ const requestHandler = async (req, res) => {
     return;
   }
 
+
+  // Road Traffic Analytics API (Aggregates Drive D 10-min clips & vehicle detection CSVs)
+  if (pathname === '/api/road-analytics') {
+    try {
+      const day = parsedUrl.query ? (parsedUrl.query.day || null) : null;
+      const forceFresh = parsedUrl.query && (parsedUrl.query.fresh === '1' || parsedUrl.query.fresh === 'true');
+      const data = buildRoadAnalytics(day, forceFresh);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=15'
+      });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: err.message || 'Analytics error', summary: {}, roads: [] }));
+    }
+    return;
+  }
 
   // What recorder/record.py kept: ten minutes of one camera per file, listed
   // in the order they were recorded and handed over a range at a time.

@@ -221,7 +221,7 @@ function formatCamSummary(camId, ctx) {
   const det = ctx.detMap.get(camId);
   if (det && det.total !== null) {
     const spd = det.area_speed;
-    const spdStr = spd ? `ความเร็ว ${spd.avg_px_s} px/s · จอดนิ่ง ${spd.stopped_pct}%` : `ตรวจพบ ${det.total} คัน`;
+    const spdStr = spd ? `สถานะ ${spd.status_th || spd.status} · จอดนิ่ง ${spd.stopped_pct}%` : `ตรวจพบ ${det.total} คัน`;
     return `[🎥 ${title}](cam:${camId}) (*${spdStr}*)`;
   }
   return `[🎥 ${title}](cam:${camId})`;
@@ -677,7 +677,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
         let reply = `### 🗺️ คำแนะนำทางเลี่ยงจุดวิกฤติ: **${cam.title}**\n\n`;
         reply += `- **สถานะปัจจุบันที่จุดนี้**: ${det && det.total !== null ? `ตรวจพบรถ **${det.total} คัน**` : 'กำลังประมวลผล'}`;
         if (spd) {
-          reply += ` · ความเร็ว **${spd.avg_px_s} px/s** (สถานะ: **${spd.status_th || spd.status}**, จอดนิ่ง **${spd.stopped_pct}%**)`;
+          reply += ` · สถานะ: **${spd.status_th || spd.status}** (จอดนิ่ง **${spd.stopped_pct}%**)`;
         }
         reply += `\n\n`;
         if (spd && (spd.status === 'jam' || spd.stopped_pct >= 50)) {
@@ -701,7 +701,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
     if (topBottlenecks.length > 0) {
       topBottlenecks.forEach(d => {
         relatedCams.push(d.id);
-        reply += `- [🎥 ${d.title}](cam:${d.id}): ตรวจพบรถ **${d.total} คัน** · ความเร็ว **${d.area_speed.avg_px_s} px/s** (จอดนิ่งสะสม **${d.area_speed.stopped_pct}%**)\n`;
+        reply += `- [🎥 ${d.title}](cam:${d.id}): ตรวจพบรถ **${d.total} คัน** · สถานะ **${d.area_speed.status_th || d.area_speed.status}** (จอดนิ่งสะสม **${d.area_speed.stopped_pct}%**)\n`;
       });
     } else {
       reply += `- ✅ โครงข่ายหลักส่วนใหญ่ยังไม่มีจุดติดขัดสะสมรุนแรง\n`;
@@ -738,7 +738,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
 
         if (det.area_speed) {
           const spd = det.area_speed;
-          reply += `- ⚡ **ความเร็วพื้นที่จริง**: **${spd.avg_px_s} px/s** (สถานะ: **${spd.status_th || spd.status}**)\n`;
+          reply += `- 🚥 **สถานะการจราจร**: **${spd.status_th || spd.status}**\n`;
           reply += `- 🛑 **สัดส่วนรถจอดนิ่ง/รอสัญญาณ**: **${spd.stopped_pct}%** (${spd.stopped_count || 0} คันนิ่ง, ${spd.moving_count || 0} คันกำลังวิ่ง)\n`;
         }
       } else {
@@ -785,7 +785,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
       if (det && det.total !== null) {
         reply += `- ตรวจพบรถ **${det.total} คัน**`;
         if (det.area_speed) {
-          reply += ` · ความเร็วพื้นที่ **${det.area_speed.avg_px_s} px/s** · จอดนิ่ง **${det.area_speed.stopped_pct}%** (สถานะ: **${det.area_speed.status_th || det.area_speed.status}**)`;
+          reply += ` · สถานะ **${det.area_speed.status_th || det.area_speed.status}** · จอดนิ่ง **${det.area_speed.stopped_pct}%**`;
         }
         reply += `\n`;
       } else {
@@ -842,7 +842,7 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
       reply += `\n**กล้องที่ตรวจพบจำนวนรถหนาแน่นที่สุด (YOLO AI)**:\n`;
       ctx.busyCams.slice(0, 3).forEach(d => {
         relatedCams.push(d.id);
-        const spdStr = d.area_speed ? ` · ความเร็ว ${d.area_speed.avg_px_s} px/s (${d.area_speed.status_th})` : '';
+        const spdStr = d.area_speed ? ` · สถานะ ${d.area_speed.status_th || d.area_speed.status}` : '';
         reply += `- [🎥 ${d.title}](cam:${d.id}): ตรวจพบ **${d.total} คัน**${spdStr}\n`;
       });
     }
@@ -917,45 +917,53 @@ function runBuiltInEngine(query, ctx, selectedCamId) {
 }
 
 /**
- * Calls Google Gemini API if user has provided an API key
+ * Calls Google Gemini API (Gemini 2.0 Flash Lite with robust fallback)
  */
 async function callGemini(apiKey, query, ctx, history) {
+  // Build comprehensive Map-grounded context for ALL roads
+  const allRoadsMapContext = ctx.sortedRoads.map(r => {
+    const c = r.congestion;
+    const fwd = r.directions?.forward ? `ขาไป: ${r.directions.forward.label}` : '';
+    const rev = r.directions?.reverse ? `ขากลับ: ${r.directions.reverse.label}` : '';
+    const dirStr = [fwd, rev].filter(Boolean).join(', ');
+    const camLinks = (r.cameras || []).map(cam => `${cam.title} [cam:${cam.id}]`).join(', ');
+    return `- 🛣️ ถนน/แยก "${r.name}" ${dirStr ? `(${dirStr})` : ''}:
+  * สีบนแผนที่ (Map Vector): 🔴 ติดขัด ${c ? c.share.jam : 0}% | 🟡 ชะลอตัว ${c ? c.share.slow : 0}% | 🟢 คล่องตัว ${c ? c.share.flowing : 0}%
+  * ระดับความหนาแน่น: ${c ? c.label : 'ปกติ'} (คะแนน ${c ? c.score : 0}/100)
+  * มาตรการไฟจราจร: ${r.advice ? r.advice.headline + ' - ' + r.advice.detail : 'ปกติ'}
+  * กล้องตรวจจับ: ${camLinks || 'ไม่มีกล้อง'}`;
+  }).join('\n');
+
   const promptContext = `
-คุณคือ "AI ผู้ช่วยวิเคราะห์การจราจรอัจฉริยะ (BKK Traffic AI Copilot)" ของศูนย์ควบคุมจราจรกรุงเทพฯ
-คุณมีข้อมูลสภาพการจราจรแบบ Real-time จากระบบกล้อง CCTV, โมเดลตรวจจับวัตถุ YOLO11x, การคำนวณเวกเตอร์ความเร็ว Optical Flow และ Longdo Traffic Index ดังนี้:
+คุณคือ "AI ผู้ช่วยวิเคราะห์การจราจรอัจฉริยะ (BKK Traffic Gemini Flash Lite)" ประจำศูนย์ควบคุมจราจรกรุงเทพมหานคร
+ทำงานด้วยโมเดล Gemini Flash Lite ความเร็วสูง เชื่อมต่อฐานข้อมูลสด Real-time จากระบบกล้อง CCTV, โมเดลตรวจจับรถ YOLO11x, และแผนที่เส้นสีจราจร Longdo Traffic Vector Tiles 33,000 เวกเตอร์เซกเมนต์
 
-[ข้อมูลสถานะระบบล่าสุด]:
-- ดัชนีจราจรภาพรวม กทม. (Longdo Traffic Index): ${ctx.trafficIndex}
+🔴🟡🟢 [กฎเหล็กสำคัญที่สุด: คำแนะนำต้องตรงกับแผนที่จราจร 100% (Strict Map Grounding)]:
+1. คำตอบ สภาพจราจร และการแนะนำเส้นทางของคุณ "ต้องตรงกับข้อมูลสีเส้นบนแผนที่ (Map Vector)" ด้านล่างนี้ 100% เสมอ!
+2. ห้ามคาดเดาหรือให้ข้อมูลที่ขัดแย้งกับสีของแผนที่เด็ดขาด:
+   - ถนนที่มีเส้นสีแดง (ติดขัด / Jam >= 15%): ต้องแจ้งเตือนผู้ใช้ว่าเป็นจุดติดขัดสะสม คอขวด และแนะนำให้ "หลีกเลี่ยง"
+   - ถนนที่มีเส้นสีเขียว (คล่องตัว / Flowing >= 65%): ให้แนะนำเป็น "เส้นทางเลี่ยงสีเขียว (Green Bypass)" ที่ควรใช้
+   - ระบุเปอร์เซ็นต์สีแดง/เหลือง/เขียวให้ตรงกับตัวเลขจริงบนแผนที่เสมอ
+3. หากผู้ใช้ถามว่า "ตรวจจากแมพได้ไหม" หรือ "ดูจากแผนที่" ให้ตอบอย่างมั่นใจว่าระบบประมวลผลข้อมูลเส้นสีเวกเตอร์บนแผนที่สดทุก 5 นาที และอิงคำตอบจากแผนที่โดยตรง
+
+[ข้อมูลสถานะระบบภาพรวม]:
+- ดัชนีจราจร กทม. (Longdo Traffic Index): ${ctx.trafficIndex}
 - จำนวนกล้อง CCTV สด: ${ctx.totalCams} ตัว
-- ปริมาณรถที่ AI นับได้ในพื้นที่กล้อง: รวม ${ctx.totalVehiclesCounted} คัน (รถเก๋ง: ${ctx.vehicleTypes.car}, มอเตอร์ไซค์: ${ctx.vehicleTypes.motorcycle}, รถเมล์: ${ctx.vehicleTypes.bus}, รถบรรทุก: ${ctx.vehicleTypes.truck})
+- ปริมาณรถที่ AI นับได้ในพื้นที่กล้อง: รวม ${ctx.totalVehiclesCounted} คัน (รถเก๋ง/กระบะ: ${ctx.vehicleTypes.car}, มอเตอร์ไซค์: ${ctx.vehicleTypes.motorcycle}, รถเมล์: ${ctx.vehicleTypes.bus}, รถบรรทุก: ${ctx.vehicleTypes.truck})
 
-[ข้อมูลถนนและสัญญาณไฟที่มีการแนะนำ]:
-${ctx.sortedRoads.slice(0, 8).map(r => {
-  const c = r.congestion;
-  return `- ${r.name}: ความหนาแน่น=${c ? c.label : 'N/A'} (คะแนน ${c ? c.score : 0}/100), ติดขัด=${c ? c.share.jam : 0}%, คล่องตัว=${c ? c.share.flowing : 0}%, คำแนะนำ=${r.advice ? r.advice.headline : 'ปกติ'}`;
-}).join('\n')}
+[ข้อมูลเส้นสีบนแผนที่จราจรแบบสด 100% ทั่วกรุงเทพฯ (Real-Time Map Vector Readings)]:
+${allRoadsMapContext}
 
 [กล้องที่มีรถหนาแน่นสุดจาก YOLO]:
-${ctx.busyCams.slice(0, 5).map(d => {
-  const spd = d.area_speed ? `ความเร็ว ${d.area_speed.avg_px_s} px/s, จอดนิ่ง ${d.area_speed.stopped_pct}% (${d.area_speed.status_th})` : '';
-  return `- กล้อง ${d.title} (ID: ${d.id}): พบรถ ${d.total} คัน ${spd}`;
+${ctx.busyCams.slice(0, 6).map(d => {
+  const spd = d.area_speed ? `สถานะ ${d.area_speed.status_th || d.area_speed.status}, จอดนิ่ง ${d.area_speed.stopped_pct}%` : '';
+  return `- กล้อง [🎥 ${d.title}](cam:${d.id}): พบรถ ${d.total} คัน ${spd}`;
 }).join('\n')}
 
-[ความสามารถในการตรวจจับเส้นทางสีแดงบนแผนที่ (Map-Based Red Route Navigator)]:
-คุณสามารถตรวจจับเส้นทางสีแดง (ติดขัดสะสม) จากข้อมูลเวกเตอร์แผนที่จราจร (Longdo Traffic Vector Tiles) ได้โดยตรง:
-- ระบุถนนที่มีเส้นสีแดงติดขัด (สัดส่วนติดขัด %) และวิเคราะห์คอขวดบนแผนที่
-- เมื่อพบถนน/เส้นทางที่มีเส้นสีแดง ให้เสนอ "เส้นทางเลี่ยงสีเขียว (Green Bypass)" ที่คล่องตัวกว่าในโซนใกล้เคียงทันที
-- ผู้ใช้สามารถถามให้จับจากแผนที่แทนกล้องได้ และคุณสามารถตอบได้อย่างมั่นใจว่าระบบรองรับการตรวจจับจากแผนที่โดยตรง 100%
-
-[ความสามารถในการนำทางและเสนอเส้นทางเลี่ยง (Navigation & Bypass AI)]:
-คุณสามารถวางแผนเส้นทางและเสนอทางเลี่ยงรถติดได้อย่างแม่นยำ โดยวิเคราะห์ทิศทางการเดินทาง (จุดต้นทาง Origin และปลายทาง Destination) ให้ถูกต้องตรงตามคำถามของผู้ใช้เสมอ (ห้ามสลับทิศทางหรือนำทางในทิศทางที่ไม่ตรงกับที่ถามมาตอบ):
-- ตะวันตกเฉียงใต้ ➔ เหนือ/นนทบุรี: พระราม 2 / บางปะกอก ➔ มจพ. พระนครเหนือ / พระราม 7 / วงศ์สว่าง (เทียบทางด่วนเฉลิมมหานคร ข้ามสะพานพระราม 9 ➔ ด่วนศรีรัช ลงด่านพระราม 7 vs ทางเลี่ยงฝั่งธนบุรี ถ.ราชพฤกษ์ ➔ ถ.นครอินทร์ ➔ ข้ามสะพานพระราม 5 ไม่เสียค่าทางด่วน)
-- เหนือ ➔ ใจกลางเมือง: ดอนเมือง/วิภาวดี ➔ สาทร/สีลม (เทียบทางด่วนเฉลิมมหานคร vs ทางด่วนศรีรัช)
-- ตะวันตก ➔ ใจกลางเมือง: บางใหญ่/กาญจนาภิเษก ➔ อโศก/พระราม 4 (เทียบรัตนาธิเบศร์-แคราย vs ทางด่วนประจิมรัถยา-พระราม 7)
-- ฝั่งธนบุรี ➔ ใจกลางเมือง: ราชพฤกษ์/กัลปพฤกษ์ ➔ สาทร/สีลม (เทียบสะพานตากสิน vs สะพานพระราม 3 ➔ ถ.นราธิวาสฯ)
-- เหนือ ➔ ตะวันออกเฉียงเหนือ: วงศ์สว่าง/ประชานุกูล ➔ ลำลูกกา/พหลโยธิน
-- ตะวันออก ➔ ตะวันตกเฉียงใต้: บางนา-ตราด ➔ พระราม 2 (เทียบสะพานพระราม 9 vs สะพานกาญจนาภิเษกวงแหวนใต้)
-หากผู้ใช้ถามเรื่องการเดินทาง นำทาง หรือหาทางเลี่ยง ให้เปรียบเทียบ 2 เส้นทาง ระบุข้อดี/ข้อเสีย จุดคอขวดที่ต้องเลี่ยง พร้อมใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) และแนบลิงก์เปิดนำทางบน Google Maps ในรูปแบบ [📍 เปิดนำทางบน Google Maps](https://www.google.com/maps/dir/?api=1&origin=ต้นทาง&destination=ปลายทาง&travelmode=driving) เสมอ
+[การนำทางและเสนอทางเลี่ยงรถติด (Navigation & Bypass AI)]:
+- วิเคราะห์ทิศทางการเดินทาง (จุดต้นทาง Origin และปลายทาง Destination) ให้ถูกต้องตรงตามคำถามของผู้ใช้เสมอ (ห้ามสลับทิศทาง)
+- เสนอเปรียบเทียบอย่างน้อย 2 เส้นทาง (ทางหลัก vs ทางเลี่ยงสีเขียวบนแผนที่)
+- ใส่ลิงก์กล้อง [🎥 ชื่อกล้อง](cam:CAM_ID) และแนบลิงก์เปิดนำทางบน Google Maps ในรูปแบบ [📍 เปิดนำทางบน Google Maps](https://www.google.com/maps/dir/?api=1&origin=ต้นทาง&destination=ปลายทาง&travelmode=driving) เสมอ
 
 คำแนะนำการตอบ:
 1. ตอบเป็นภาษาไทยอย่างสุภาพ เป็นมืออาชีพ ชัดเจน กระชับ และตรงประเด็น ตรวจสอบจุดเริ่มต้นและปลายทางให้ถูกต้อง 100% เสมอ
@@ -972,15 +980,37 @@ ${ctx.busyCams.slice(0, 5).map(d => {
   }
   contents.push({ role: 'user', parts: [{ text: `${promptContext}\n\nคำถามจากผู้ใช้: ${query}` }] });
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-
   const body = JSON.stringify({
     contents,
     generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 1000,
+      temperature: 0.3,
+      maxOutputTokens: 1200,
     }
   });
+
+  // Try Gemini 2.0 Flash Lite first, then fallback to other models if needed
+  const models = ['gemini-2.0-flash-lite', 'gemini-2.0-flash-lite-preview-02-05', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const text = await executeGeminiRequest(model, apiKey, body);
+      return text;
+    } catch (err) {
+      lastError = err;
+      // If model not supported or 404 on this key, try next candidate
+      if (err.message && (err.message.includes('404') || err.message.includes('not found') || err.message.includes('unsupported'))) {
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw lastError || new Error('Gemini API request failed');
+}
+
+function executeGeminiRequest(model, apiKey, body) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   return new Promise((resolve, reject) => {
     const req = https.request(url, {
@@ -989,7 +1019,7 @@ ${ctx.busyCams.slice(0, 5).map(d => {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body)
       },
-      timeout: 12000
+      timeout: 15000
     }, (res) => {
       let respBody = '';
       res.on('data', chunk => { respBody += chunk; });
@@ -997,7 +1027,7 @@ ${ctx.busyCams.slice(0, 5).map(d => {
         try {
           const data = JSON.parse(respBody);
           if (data.error) {
-            reject(new Error(data.error.message || 'Gemini API error'));
+            reject(new Error(`[${model}] ${data.error.message || 'Gemini error'}`));
             return;
           }
           const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'ไม่สามารถสร้างคำตอบได้';
@@ -1009,7 +1039,7 @@ ${ctx.busyCams.slice(0, 5).map(d => {
     });
 
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(new Error('Gemini API timeout')); });
+    req.on('timeout', () => { req.destroy(new Error(`[${model}] Gemini API timeout`)); });
     req.write(body);
     req.end();
   });
