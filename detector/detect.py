@@ -221,13 +221,31 @@ def vehicle_boxes(result, confidence):
 
 
 model_lock = threading.Lock()
+# Someone is watching: the sweep and the clip worker loop on the model lock
+# and a plain Lock hands it back to whoever asks first, which starved the
+# focused camera for half a minute at a time. Background work waits while a
+# focus worker is queued for the model.
+focus_waiting = 0
+focus_waiting_lock = threading.Lock()
 
 
-def predict(model, frame, confidence, imgsz):
+def predict(model, frame, confidence, imgsz, background=False):
     """One pass, floored low enough that the per-class floors can still apply."""
-    with model_lock:
-        return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
-                             augment=AUGMENT, quantize=QUANTIZE, verbose=False)[0]
+    global focus_waiting
+    if background:
+        while focus_waiting > 0:
+            time.sleep(0.01)
+    else:
+        with focus_waiting_lock:
+            focus_waiting += 1
+    try:
+        with model_lock:
+            return model.predict(frame, imgsz=imgsz, conf=min(confidence, MOTORCYCLE_CONF),
+                                 augment=AUGMENT, quantize=QUANTIZE, verbose=False)[0]
+    finally:
+        if not background:
+            with focus_waiting_lock:
+                focus_waiting -= 1
 
 
 def detect(model, frame, confidence, imgsz=1280):
@@ -236,7 +254,7 @@ def detect(model, frame, confidence, imgsz=1280):
     # Going past 1280 makes it worse: the cameras send 600x480 to 1280x720, so a
     # larger size is only upscaling. Measured over four frames, 1920 found 14
     # vehicles where 1280 found 21.
-    result = predict(model, frame, confidence, imgsz)
+    result = predict(model, frame, confidence, imgsz, background=True)
 
     counts = {}
     boxes = []
@@ -360,10 +378,12 @@ class FlowTracker:
             prev_speed = t.get("speed", inst_speed)
             speed = prev_speed * 0.4 + inst_speed * 0.6
 
+            # Age counts missed detections, not frames carried by flow: with
+            # YOLO only every 15th frame, ageing here emptied the picture
+            # between passes.
             moved[tid] = {
                 **t,
                 "bbox": [int(x1 + du), int(y1 + dv), int(x2 + du), int(y2 + dv)],
-                "age": t["age"] + 1,
                 "speed": round(speed, 1),
                 "is_stopped": speed < 3.5,
             }
@@ -392,8 +412,8 @@ class FlowTracker:
                     "conf": det["conf"], "age": 0,
                     "speed": spd, "is_stopped": spd < 3.5
                 }
-            elif t["age"] < self.max_age:
-                result[tid] = t
+            elif t["age"] + 1 < self.max_age:
+                result[tid] = {**t, "age": t["age"] + 1}
 
         for i, det in enumerate(detections):
             if i in taken:
@@ -455,7 +475,7 @@ class FlowTracker:
         if detections or due:
             self.tracks = self._match(moved, detections)
         else:
-            self.tracks = {tid: t for tid, t in moved.items() if t["age"] < self.max_age}
+            self.tracks = moved
 
         self.prev_gray = gray
         self.prev_time = time.time()
@@ -673,7 +693,7 @@ def analyse_clip(model, confidence, imgsz, mp4, out):
         if not ok:
             break
         height, width = frame.shape[:2]
-        result = predict(model, frame, confidence, imgsz)
+        result = predict(model, frame, confidence, imgsz, background=True)
         counts, boxes = {}, []
         for cls, box in vehicle_boxes(result, confidence):
             name = VEHICLES[cls][0]
@@ -990,15 +1010,16 @@ def main():
     # and holding that back at 8 was leaving frames on the table for no reason
     # the measurements support. The streams themselves rarely offer more than
     # this, so in practice it only stops a single viewer monopolising the card.
-    # One frame every three seconds, each one through YOLO. The optical-flow
-    # tracker cannot carry a box across a gap that long, so every frame is a
-    # fresh detection and a track is dropped after one miss.
-    ap.add_argument("--focus-fps", type=float, default=1 / 3,
+    # YOLO runs once every three seconds on the focused camera; between those
+    # passes the tracker reads five frames a second and carries each box along
+    # with the picture by optical flow, so the boxes follow the traffic
+    # instead of sitting where a vehicle was three seconds ago.
+    ap.add_argument("--focus-fps", type=float, default=5.0,
                     help="frames a second to pull for the camera being watched")
-    ap.add_argument("--redetect-every", type=int, default=1,
-                    help="run YOLO on every Nth focused frame (1 = every frame)")
-    ap.add_argument("--track-max-age", type=int, default=1,
-                    help="frames a track survives without a matching detection")
+    ap.add_argument("--redetect-every", type=int, default=15,
+                    help="run YOLO on every Nth focused frame (15 at 5 fps = every 3s)")
+    ap.add_argument("--track-max-age", type=int, default=2,
+                    help="YOLO passes a track survives without a matching detection")
     args = ap.parse_args()
 
     model_box = {}
