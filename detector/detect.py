@@ -533,8 +533,8 @@ def _claim_camera(worker_id, site):
     return next((c for c in cameras if c["id"] == wanted), None)
 
 
-def focus_worker(worker_id, model, confidence, imgsz, fps, site):
-    tracker = FlowTracker()
+def focus_worker(worker_id, model, confidence, imgsz, fps, site, redetect_every=3, max_age=4):
+    tracker = FlowTracker(redetect_every=redetect_every, max_age=max_age)
 
     def run_yolo(frame):
         result = predict(model, frame, confidence, imgsz)
@@ -989,8 +989,15 @@ def main():
     # and holding that back at 8 was leaving frames on the table for no reason
     # the measurements support. The streams themselves rarely offer more than
     # this, so in practice it only stops a single viewer monopolising the card.
-    ap.add_argument("--focus-fps", type=float, default=15.0,
+    # One frame every three seconds, each one through YOLO. The optical-flow
+    # tracker cannot carry a box across a gap that long, so every frame is a
+    # fresh detection and a track is dropped after one miss.
+    ap.add_argument("--focus-fps", type=float, default=1 / 3,
                     help="frames a second to pull for the camera being watched")
+    ap.add_argument("--redetect-every", type=int, default=1,
+                    help="run YOLO on every Nth focused frame (1 = every frame)")
+    ap.add_argument("--track-max-age", type=int, default=1,
+                    help="frames a track survives without a matching detection")
     args = ap.parse_args()
 
     model_box = {}
@@ -1006,7 +1013,7 @@ def main():
         while "model" not in model_box:
             time.sleep(0.5)
         focus_worker(worker_id, model_box["model"], args.conf, args.imgsz,
-                     args.focus_fps, args.site)
+                     args.focus_fps, args.site, args.redetect_every, args.track_max_age)
 
     for worker_id in range(args.focus_workers):
         threading.Thread(target=run_focus, args=(worker_id,), daemon=True).start()
