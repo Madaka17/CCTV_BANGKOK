@@ -15,6 +15,14 @@ const { handleChat } = require('./traffic-bot.js');
 
 const PORT = process.env.PORT || 3000;
 
+process.on('uncaughtException', (err) => {
+  if (err && (err.code === 'ECONNRESET' || err.code === 'EPIPE')) return;
+  console.error('[Process uncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Process unhandledRejection]', reason);
+});
+
 // --- Serverless (Vercel) compatibility -------------------------------------
 // On Vercel this file is loaded as a serverless function: there is no long-lived
 // process, the filesystem is read-only (except /tmp), and a response cannot stay
@@ -922,6 +930,33 @@ const requestHandler = async (req, res) => {
       return;
     }
     sendRecording(res, pathname.slice('/api/recording/'.length), req.headers.range);
+    return;
+  }
+
+  // Boxes for a recorded clip, sampled by the detector and cached beside the
+  // clip. Answers "pending" while the detector is still on it, and "off"
+  // when there is no detector at all.
+  if (pathname.startsWith('/api/recording-boxes/')) {
+    const parts = pathname.slice('/api/recording-boxes/'.length).split('/').map(decodeURIComponent);
+    if (parts.length !== 3 || !parts.every(p => SAFE_SEGMENT.test(p.replace(/\.mp4$/, '')))) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'bad path' }));
+      return;
+    }
+    const [camId, day, file] = parts;
+    const target = `${DETECTOR_URL}/clip?cam=${encodeURIComponent(camId)}&clip=${encodeURIComponent(`${day}/${file}`)}`;
+    try {
+      const r = await fetch(target, { signal: AbortSignal.timeout(10000) });
+      const body = Buffer.from(await r.arrayBuffer());
+      res.writeHead(r.status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': r.status === 200 && body.includes('"done"') ? 'public, max-age=3600' : 'no-store'
+      });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ enabled: false, status: 'off' }));
+    }
     return;
   }
 

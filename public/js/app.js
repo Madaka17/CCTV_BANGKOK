@@ -103,7 +103,9 @@ function render() {
          data-org="${escapeHtml(cam.org || '')}"
          class="camera-card rounded-2xl overflow-hidden flex flex-col group relative">
       <div class="relative bg-black aspect-video flex items-center justify-center cursor-pointer" data-detail="${escapeHtml(cam.id)}">
-        <div id="rec-${cssId(cam.id)}" class="absolute inset-0"></div>
+        <div id="rec-${cssId(cam.id)}" class="absolute inset-0">
+          <video id="v-${cssId(cam.id)}" class="absolute inset-0 w-full h-full object-contain" muted playsinline></video>
+        </div>
 
         <!-- Top Left: LIVE indicator tag -->
         <div class="absolute top-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/65 backdrop-blur-md border border-white/10 text-[10px] font-bold text-white tracking-wider">
@@ -204,7 +206,6 @@ function render() {
   paintTrafficBadges();
   updateWatchlistBadges();
   observeCards();
-  state.cameras.forEach(paintRecording);
   renderDashboard();
 }
 
@@ -240,6 +241,7 @@ function attachPlayer(cam, prefix = 'v-') {
   if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = cam.hls;
     video.play().catch(() => say('แตะเพื่อเล่น'));
+    state.players.set(key, { destroy() { try { video.removeAttribute('src'); video.load(); } catch (e) {} } });
     return;
   }
 
@@ -545,7 +547,8 @@ async function loadRecordings(forceFresh = false) {
     const data = await res.json();
     state.recordings = new Map((data.cameras || []).map(c => [c.id, c]));
     showRecorderNotice(!data.recording);
-    state.cameras.forEach(paintRecording);
+    paintDashClips();
+    paintCardCounts();
     clearAlert('recordings-api');
   } catch (err) {
     setAlert('recordings-api', { level: 'error', title: 'อ่านรายการคลิปไม่ได้', message: err.message });
@@ -568,132 +571,145 @@ function formatClipTime(clip) {
   return part.replace(/\.mp4$/i, '').replace(/-/g, ':');
 }
 
-function paintRecording(cam) {
-  const slot = el('rec-' + cssId(cam.id));
-  if (!slot) return;
-  const rec = state.recordings.get(cam.id);
-  const clips = (rec && rec.clips) || [];
-  const isWriting = rec && rec.isWriting;
+// --- Dashboard clip wall ----------------------------------------------------
+//
+// The four featured cards on the dashboard play the recorder's newest clip
+// for their camera, and lay YOLO boxes over it that were sampled from that
+// same clip (see /api/recording-boxes). The camera grid, by contrast, plays
+// the live HLS stream - see attachPlayer.
 
-  // Fallback: If no recorded clips exist at all on Drive D for this camera,
-  // show the live image snapshot from the AI detector.
-  if (!rec || !clips.length) {
-    const liveSrc = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
-    const badgeText = isWriting ? 'กำลังบันทึกคลิปแรก...' : 'สด (Live AI)';
-
-    let img = slot.querySelector('img.live-feed-img');
-    let timeEl = slot.querySelector('.rec-time');
-    if (img && timeEl) {
-      timeEl.textContent = badgeText;
-      return;
+function paintDashClips() {
+  for (const id of state.dashFeatured || []) {
+    const cam = state.cameras.find(c => c.id === id);
+    const video = el('dv-' + cssId(id));
+    if (!cam || !video) continue;
+    const rec = state.recordings.get(id);
+    const msg = el('dm-' + cssId(id));
+    if (!rec || !rec.latest) {
+      if (msg) msg.textContent = rec && rec.isWriting ? 'กำลังบันทึกคลิป 10 นาทีแรก...' : 'รอคลิปจากตัวบันทึก';
+      continue;
     }
-
-    slot.innerHTML = `
-      <img class="live-feed-img absolute inset-0 w-full h-full object-contain" src="${liveSrc}" alt="${escapeHtml(cam.title)}" />
-      <div class="rec-badge absolute bottom-2.5 left-2.5 z-10 px-2 py-0.5 text-[10px] font-bold bg-slate-900/85 backdrop-blur-md text-emerald-300 rounded-md border border-white/10 flex items-center gap-1 shadow-sm pointer-events-none">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span class="rec-time">${badgeText}</span>
-      </div>`;
-
-    img = slot.querySelector('img.live-feed-img');
-    if (img) {
-      img.onload = () => drawBoxes(cam.id, el('o-' + cssId(cam.id)), img);
-      drawBoxes(cam.id, el('o-' + cssId(cam.id)), img);
+    if (msg) msg.textContent = '';
+    if (!video.dataset.clip) {
+      bindDashVideo(cam, video);
+      playDashClip(cam, video, rec.latest);
+    } else if (video.paused && !video.ended && state.view === 'dashboard') {
+      video.muted = true;
+      video.play().catch(() => {});
     }
-    return;
   }
+}
 
-  // Clips exist, so the card gets a video element. Whether it actually streams
-  // is ensurePlayback's call - see MAX_PLAYING.
-  const latestClip = clips[clips.length - 1];
-  const playing = slot.querySelector('video');
-
-  // If a video element already exists on this card
-  if (playing) {
-    playing.dataset.clips = clips.join(' ');
-    playing.dataset.latest = latestClip;
-    ensurePlayback();
-    return;
-  }
-
-  slot.innerHTML = `
-    <video class="absolute inset-0 w-full h-full object-contain" muted playsinline></video>
-    <div class="rec-badge absolute bottom-2.5 left-2.5 z-10 px-2 py-0.5 text-[10px] font-bold bg-slate-900/85 backdrop-blur-md text-emerald-300 rounded-md border border-white/10 flex items-center gap-1 shadow-sm pointer-events-none">
-      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-      <span class="rec-time">${formatClipTime(latestClip) || 'คลิปล่าสุด'}</span>
-    </div>`;
-
-  const video = slot.querySelector('video');
-  const timeEl = slot.querySelector('.rec-time');
+function playDashClip(cam, video, clip) {
+  video.dataset.clip = clip;
+  video._boxes = null;
+  video._boxStatus = 'pending';
+  video.src = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
   video.muted = true;
   video.defaultMuted = true;
   video.playsInline = true;
-  video.dataset.clips = clips.join(' ');
-  video.dataset.latest = latestClip;
+  const timeEl = el('dt-' + cssId(cam.id));
+  if (timeEl) timeEl.textContent = 'REC ' + (formatClipTime(clip) || '');
+  if (state.view === 'dashboard') video.play().catch(() => {});
+  drawClipFrame(cam.id, video);
+  loadClipBoxes(cam.id, clip, video);
+}
 
-  const playClip = (clip) => {
-    if (video._waitNextTimer) {
-      clearInterval(video._waitNextTimer);
-      video._waitNextTimer = null;
-    }
-    video.dataset.clip = clip;
-    const targetSrc = `/api/recording/${encodeURIComponent(cam.id)}/${clip}`;
-    if (!video.src.includes(targetSrc)) {
-      video.src = targetSrc;
-    }
-    video.muted = true;
-    video.defaultMuted = true;
-    video.playsInline = true;
-    if (timeEl) timeEl.textContent = formatClipTime(clip) || 'คลิปล่าสุด';
-    const p = video.play();
-    if (p && p.catch) {
-      p.catch(() => {
-        video.muted = true;
-        video.play().catch(() => {});
-      });
-    }
-  };
-  video._playClip = playClip;
-
-  video.addEventListener('playing', () => {
-    drawBoxes(cam.id, el('o-' + cssId(cam.id)), video);
-  });
-  video.addEventListener('loadedmetadata', () => {
-    drawBoxes(cam.id, el('o-' + cssId(cam.id)), video);
-  });
-
+function bindDashVideo(cam, video) {
+  if (video._bound) return;
+  video._bound = true;
+  video.addEventListener('timeupdate', () => drawClipFrame(cam.id, video));
+  video.addEventListener('loadedmetadata', () => drawClipFrame(cam.id, video));
   video.addEventListener('ended', async () => {
     await loadRecordings(true);
-    const freshRec = state.recordings.get(cam.id);
-    const freshClips = (freshRec && freshRec.clips) || video.dataset.clips.split(' ').filter(Boolean);
-    if (!freshClips.length) {
-      video.currentTime = 0;
-      video.play().catch(() => {});
-      return;
-    }
-
-    const newestClip = freshClips[freshClips.length - 1];
-    if (newestClip && newestClip !== video.dataset.clip) {
-      playClip(newestClip);
+    const rec = state.recordings.get(cam.id);
+    const newest = rec && rec.latest;
+    if (newest && newest !== video.dataset.clip) {
+      playDashClip(cam, video, newest);
     } else {
-      // Loop smoothly
       video.currentTime = 0;
       video.play().catch(() => {});
     }
   });
-
   video.addEventListener('error', () => {
     setTimeout(async () => {
-      // stopCard drops the source to free the connection, and that itself
-      // raises an error event. A card that is no longer scheduled must stay off.
-      if (!state.playing.includes(cam.id)) return;
+      if (!video.dataset.clip) return;
       await loadRecordings(true);
-      const errRec = state.recordings.get(cam.id);
-      if (errRec && errRec.latest) playClip(errRec.latest);
+      const rec = state.recordings.get(cam.id);
+      if (rec && rec.latest) playDashClip(cam, video, rec.latest);
     }, 4000);
   });
+}
 
-  ensurePlayback();
+// The detector answers "pending" until it has been through the clip once, and
+// "off" when it is not running at all. Poll gently: a clip lasts ten minutes.
+function loadClipBoxes(camId, clip, video, attempt = 0) {
+  fetch(`/api/recording-boxes/${encodeURIComponent(camId)}/${clip}`)
+    .then(r => r.json())
+    .then(data => {
+      if (video.dataset.clip !== clip) return;
+      if (data.status === 'done') {
+        video._boxes = data.frames || [];
+        video._boxStatus = 'done';
+        drawClipFrame(camId, video);
+        return;
+      }
+      video._boxStatus = data.enabled === false ? 'off' : 'pending';
+      drawClipFrame(camId, video);
+      if (attempt >= 90) return;
+      const wait = video._boxStatus === 'off' ? 30000 : 10000;
+      setTimeout(() => loadClipBoxes(camId, clip, video, attempt + 1), wait);
+    })
+    .catch(() => {
+      if (video.dataset.clip !== clip) return;
+      video._boxStatus = 'off';
+      drawClipFrame(camId, video);
+      if (attempt < 90) setTimeout(() => loadClipBoxes(camId, clip, video, attempt + 1), 30000);
+    });
+}
+
+const CLIP_BADGE = 'position:absolute;bottom:8px;left:8px;padding:3px 10px;border-radius:8px;background:rgba(15,23,42,.85);color:#fff;font-size:11px;display:flex;align-items:center;gap:6px;pointer-events:none';
+
+function drawClipFrame(camId, video) {
+  const overlay = el('do-' + cssId(camId));
+  if (!overlay) return;
+  const frames = video._boxes;
+  if (!frames) {
+    const text = video._boxStatus === 'off'
+      ? 'YOLO ไม่ทำงาน (npm run detect)'
+      : 'กำลังวิเคราะห์คลิปด้วย YOLO11x...';
+    overlay.innerHTML = `<div style="${CLIP_BADGE};color:#cbd5e1">${text}</div>`;
+    return;
+  }
+  if (!frames.length) { overlay.innerHTML = ''; return; }
+
+  // Last sampled frame at or before the playhead
+  const t = video.currentTime || 0;
+  let lo = 0, hi = frames.length - 1, idx = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (frames[mid].t <= t) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  const f = frames[idx];
+  const r = pictureRect(video);
+  const parts = Object.entries(f.counts || {})
+    .filter(([_, n]) => n > 0)
+    .map(([k, n]) => `${LABELS[k] || k} ${n}`)
+    .join(' · ');
+
+  overlay.innerHTML = `
+    <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" preserveAspectRatio="none">
+      ${f.boxes.map(b => {
+        const x = r.x + b.x * r.w, y = r.y + b.y * r.h;
+        const w = b.w * r.w, h = b.h * r.h;
+        const c = BOX_COLOURS[b.k] || '#54C00C';
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="none" stroke="${c}" stroke-width="2" rx="2" />`;
+      }).join('')}
+    </svg>
+    <div style="${CLIP_BADGE}">
+      <span style="color:#38bdf8;font-weight:600">รถ ${f.total} คัน</span>
+      ${parts ? `<span style="color:#94a3b8;font-size:10px">${parts}</span>` : ''}
+    </div>`;
 }
 
 // --- How many clips may stream at once -------------------------------------
@@ -702,7 +718,7 @@ function paintRecording(cam) {
 // usually watched through the Tailscale funnel, which relays. Playing all 29 at
 // once starves every one of them, so only the cards on screen stream, a few at
 // a time. This is the budget the comment on state.playing describes.
-const MAX_PLAYING = 4;
+const MAX_PLAYING = 6;
 
 function recVideo(camId) {
   const slot = el('rec-' + cssId(camId));
@@ -711,11 +727,12 @@ function recVideo(camId) {
 
 function stopCard(camId) {
   const video = recVideo(camId);
-  if (!video) return;
+  const player = state.players.get(camId);
   // Pausing alone leaves the browser filling its buffer, which is the whole
-  // problem. Dropping the source is what closes the connection.
-  try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {}
-  delete video.dataset.clip;
+  // problem. Tearing the player down is what closes the connection.
+  if (player && player.destroy) { try { player.destroy(); } catch (e) {} }
+  state.players.delete(camId);
+  if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
 }
 
 function ensurePlayback() {
@@ -732,11 +749,11 @@ function ensurePlayback() {
 
   for (const id of wanted) {
     const video = recVideo(id);
-    const rec = state.recordings.get(id);
-    if (!video || !rec || !rec.latest) continue;
-    if (!video.dataset.clip) {
-      if (video._playClip) video._playClip(rec.latest);
-    } else if (video.paused && !video.ended) {
+    if (!video) continue;
+    if (!state.players.has(id)) {
+      const cam = state.cameras.find(c => c.id === id);
+      if (cam) attachPlayer(cam);
+    } else if (video.paused) {
       video.muted = true;
       video.play().catch(() => {});
     }
@@ -959,15 +976,6 @@ async function loadDetections() {
       badge.textContent = seen.length
         ? `รถ ${total} คัน จาก ${seen.length} กล้อง` : '';
     }
-
-    // Update live feed images on any cards operating in live image mode
-    state.cameras.forEach(cam => {
-      const slot = el('rec-' + cssId(cam.id));
-      const liveImg = slot && slot.querySelector('img.live-feed-img');
-      if (liveImg) {
-        liveImg.src = `/api/detect-frame/${encodeURIComponent(cam.id)}?t=${Date.now()}`;
-      }
-    });
 
     if (state.detail) renderDetailCounts(state.detail, state.detections.get(state.detail.id));
     redrawAllBoxes();
@@ -1437,9 +1445,20 @@ function attachDetailPlayer(cam, video, msg) {
   });
   hls.on(window.Hls.Events.ERROR, (_e, d) => {
     if (!d.fatal) return;
-    if (d.type === window.Hls.ErrorTypes.NETWORK_ERROR) { say('กำลังเชื่อมต่อใหม่...'); hls.startLoad(); }
-    else if (d.type === window.Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-    else { say('กล้องนี้ไม่พร้อมใช้งาน'); hls.destroy(); }
+    if (d.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+      say('กำลังเชื่อมต่อใหม่...');
+      hls.startLoad();
+    } else if (d.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+      if (d.details === 'manifestIncompatibleCodecsError' || d.details === 'bufferAddCodecError') {
+        say('สัญญาณภาพต้นทางเป็น Codec HEVC (แนะนำดูคลิปบันทึก 10 นาที)');
+        hls.destroy();
+      } else {
+        hls.recoverMediaError();
+      }
+    } else {
+      say('กล้องนี้ไม่พร้อมใช้งาน');
+      hls.destroy();
+    }
   });
   video.addEventListener('playing', () => say(''), { once: true });
   state.players.set('detail', hls);
@@ -1819,20 +1838,24 @@ function renderDashboard() {
       if (!featuredCams.includes(c)) featuredCams.push(c);
     }
 
-    featuredContainer.innerHTML = featuredCams.map(cam => {
-      const trafficInfo = state.cameraTraffic.get(cam.id);
-      const level = trafficInfo?.level === 'jam' ? 'jam' : trafficInfo?.level === 'slow' ? 'slow' : 'flowing';
-      const levelText = level === 'jam' ? 'ติดขัด' : level === 'slow' ? 'ชะลอตัว' : 'คล่องตัว';
-      const provider = /^DOH/i.test(cam.id) ? 'DOH' : /^ITIC/i.test(cam.id) ? 'iTIC' : 'BMA';
+    const featuredKey = featuredCams.map(c => c.id).join('|');
+    if (state.dashFeaturedKey !== featuredKey || !featuredContainer.querySelector('video')) {
+      state.dashFeaturedKey = featuredKey;
+      state.dashFeatured = featuredCams.map(c => c.id);
 
-      return `
+      featuredContainer.innerHTML = featuredCams.map(cam => {
+        const provider = /^DOH/i.test(cam.id) ? 'DOH' : /^ITIC/i.test(cam.id) ? 'iTIC' : 'BMA';
+        const id = cssId(cam.id);
+        return `
         <div class="dash-cam-card group" data-dash-cam="${escapeHtml(cam.id)}" role="button" tabindex="0" aria-label="เปิดกล้อง ${escapeHtml(cam.title)}">
           <div class="aspect-video relative overflow-hidden bg-slate-900">
-            <img src="${escapeHtml(cam.image || '')}" alt="" class="w-full h-full object-cover" loading="lazy" onerror="this.onerror=null;this.src='/img/cam-offline.png';" />
-            <div class="absolute top-2 left-2 z-10 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/45 backdrop-blur-sm text-[10px] font-semibold text-white tracking-wider">
-              <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>LIVE
+            <video id="dv-${id}" class="absolute inset-0 w-full h-full object-contain" muted playsinline preload="metadata"></video>
+            <div id="do-${id}" class="absolute inset-0 pointer-events-none z-10"></div>
+            <div id="dm-${id}" class="absolute inset-0 flex items-center justify-center text-xs text-slate-400 text-center px-4 pointer-events-none"></div>
+            <div class="absolute top-2 left-2 z-20 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/45 backdrop-blur-sm text-[10px] font-semibold text-white tracking-wider">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span><span id="dt-${id}">REC</span>
             </div>
-            <div class="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center pointer-events-none">
+            <div class="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center pointer-events-none z-20">
               <span class="w-10 h-10 rounded-full bg-white/90 text-slate-900 flex items-center justify-center shadow-sm">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
               </span>
@@ -1844,24 +1867,37 @@ function renderDashboard() {
               <p class="text-[11px] text-slate-400 truncate">${escapeHtml(cam.org || 'BMA CCTV')}</p>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
-              <span class="status-pill status-${level}">${levelText}</span>
+              <span id="ds-${id}" class="status-pill status-flowing">คล่องตัว</span>
               <span class="text-[10px] font-medium text-slate-400 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700">${provider}</span>
             </div>
           </div>
         </div>
-      `;
-    }).join('');
+        `;
+      }).join('');
 
-    featuredContainer.querySelectorAll('[data-dash-cam]').forEach(card => {
-      const open = () => {
-        const cam = state.cameras.find(c => c.id === card.dataset.dashCam);
-        if (cam) openDetail(cam);
-      };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      featuredContainer.querySelectorAll('[data-dash-cam]').forEach(card => {
+        const open = () => {
+          const cam = state.cameras.find(c => c.id === card.dataset.dashCam);
+          if (cam) openDetail(cam);
+        };
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
       });
-    });
+    }
+
+    // Traffic level can change between renders without the cards changing
+    for (const cam of featuredCams) {
+      const pill = el('ds-' + cssId(cam.id));
+      if (!pill) continue;
+      const info = state.cameraTraffic.get(cam.id);
+      const level = info?.level === 'jam' ? 'jam' : info?.level === 'slow' ? 'slow' : 'flowing';
+      pill.className = `status-pill status-${level}`;
+      pill.textContent = level === 'jam' ? 'ติดขัด' : level === 'slow' ? 'ชะลอตัว' : 'คล่องตัว';
+    }
+
+    paintDashClips();
   }
 
   // 6. Top Congested Hotspots (Top 5)
@@ -1990,8 +2026,16 @@ function switchView(view) {
 
   document.body.classList.toggle('hide-toolbar', view !== 'cams');
 
+  // Clips on the dashboard wall only stream while the wall is on screen
+  if (view !== 'dashboard') {
+    document.querySelectorAll('#dash-featured-cams video').forEach(v => v.pause());
+  }
+
   if (view === 'dashboard') {
     renderDashboard();
+  } else if (view === 'cams') {
+    // Re-observe so the cards that are now on screen start their streams
+    observeCards();
   } else if (view === 'map') {
     buildMap();
     setTimeout(() => state.map && state.map.resize(), 60);
@@ -2888,7 +2932,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadRecordings();
   setInterval(() => {
-    if (state.view === 'cams') loadRecordings();
+    if (state.view === 'cams' || state.view === 'dashboard') loadRecordings();
   }, 10000);
 
   // Browser Autoplay Policy Unblocker: Ensure all videos play on first user interaction

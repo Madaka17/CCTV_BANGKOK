@@ -10,6 +10,7 @@
     "share:ts": "tailscale funnel --bg 3000",
     "log:traffic": "node logger/log-traffic.js",
     "log:once": "node logger/log-traffic.js --once",
+    "detect": "detector/.venv/Scripts/python.exe detector/detect.py --weights detector/weights/yolo11x.pt",
     "record": "detector/.venv/Scripts/python.exe recorder/record.py",
     "record:once": "detector/.venv/Scripts/python.exe recorder/record.py --once"
   },

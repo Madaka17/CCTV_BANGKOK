@@ -18,6 +18,9 @@ The web server proxies these at /api/detections and /api/detect-frame/<id>.
 import argparse
 import json
 import math
+import os
+import queue
+import re
 import threading
 import time
 import urllib.parse
@@ -631,6 +634,86 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site):
 
 # --- Sweep loop ------------------------------------------------------------
 
+# --- Recorded clips ----------------------------------------------------------
+#
+# The dashboard plays the recorder's ten minute clips and wants boxes that
+# belong to the frame on screen, not to whatever the live stream shows now.
+# A clip is sampled every CLIP_STEP seconds through the same model and the
+# boxes are kept beside it as <clip>.boxes.json, so it is only ever paid for
+# once. Work is queued: the page asks, gets "pending", and asks again.
+
+CLIP_DIR = os.environ.get("CCTV_DIR", "D:/CCTV")
+# Three seconds: 200 frames a clip, which shares the GPU with the sweeps and
+# still finishes four dashboard clips inside the ten minutes they stay current.
+CLIP_STEP = 3.0
+CLIP_SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
+CLIP_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}/\d{2}-\d{2}-\d{2}\.mp4$")
+clip_queue = queue.Queue()
+clip_pending = set()
+
+
+def clip_paths(cam_id, clip):
+    if not CLIP_SEGMENT.match(cam_id or "") or not CLIP_NAME.match(clip or ""):
+        return None, None
+    mp4 = os.path.join(CLIP_DIR, cam_id, *clip.split("/"))
+    return mp4, mp4[:-4] + ".boxes.json"
+
+
+def analyse_clip(model, confidence, imgsz, mp4, out):
+    cap = cv2.VideoCapture(mp4)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    step = max(1, int(round(fps * CLIP_STEP)))
+    frames = []
+    started = time.time()
+    for i in range(0, max(total, 1), step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ok, frame = cap.read()
+        if not ok:
+            break
+        height, width = frame.shape[:2]
+        result = predict(model, frame, confidence, imgsz)
+        counts, boxes = {}, []
+        for cls, box in vehicle_boxes(result, confidence):
+            name = VEHICLES[cls][0]
+            counts[name] = counts.get(name, 0) + 1
+            x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
+            boxes.append({
+                "k": name,
+                "x": round(x1 / width, 3), "y": round(y1 / height, 3),
+                "w": round((x2 - x1) / width, 3), "h": round((y2 - y1) / height, 3),
+            })
+        frames.append({"t": round(i / fps, 2), "total": len(boxes), "counts": counts, "boxes": boxes})
+    cap.release()
+    data = {
+        "status": "done", "model": state["model"], "step": CLIP_STEP,
+        "duration": round(total / fps, 1), "frames": frames,
+        "ms": int((time.time() - started) * 1000),
+    }
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, separators=(",", ":"))
+    os.replace(tmp, out)
+    return data
+
+
+def clip_worker(model_box, confidence, imgsz):
+    while "model" not in model_box:
+        time.sleep(0.5)
+    while True:
+        cam_id, clip = clip_queue.get()
+        mp4, out = clip_paths(cam_id, clip)
+        try:
+            if mp4 and os.path.exists(mp4) and not os.path.exists(out):
+                data = analyse_clip(model_box["model"], confidence, imgsz, mp4, out)
+                print(f"clip {cam_id}/{clip}: {len(data['frames'])} frames in {data['ms']} ms", flush=True)
+        except Exception as exc:
+            print(f"clip {cam_id}/{clip} failed: {str(exc)[:80]}", flush=True)
+        finally:
+            with lock:
+                clip_pending.discard((cam_id, clip))
+
+
 def _capture(cam):
     """One camera's frame, or the error that stopped it. Runs off the main thread."""
     # The focus worker is already on this one, at a far better rate
@@ -812,6 +895,29 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if self.path.startswith("/clip"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cam_id = query.get("cam", [""])[0]
+            clip = query.get("clip", [""])[0]
+            mp4, out = clip_paths(cam_id, clip)
+            if not mp4:
+                self._json(400, {"error": "bad clip"})
+                return
+            if os.path.exists(out):
+                with open(out, "rb") as f:
+                    self._send(200, f.read(), "application/json")
+                return
+            if not os.path.exists(mp4):
+                self._json(404, {"error": "no such clip"})
+                return
+            with lock:
+                if (cam_id, clip) not in clip_pending:
+                    clip_pending.add((cam_id, clip))
+                    clip_queue.put((cam_id, clip))
+                queued = len(clip_pending)
+            self._json(200, {"status": "pending", "queued": queued})
+            return
+
         if self.path.startswith("/health"):
             self._json(200, {
                 "model": state["model"],
@@ -881,6 +987,8 @@ def main():
 
     for worker_id in range(args.focus_workers):
         threading.Thread(target=run_focus, args=(worker_id,), daemon=True).start()
+
+    threading.Thread(target=clip_worker, args=(model_box, args.conf, args.imgsz), daemon=True).start()
 
     print(f"Detector on http://127.0.0.1:{args.port}  (sweep every {args.interval}s)", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
