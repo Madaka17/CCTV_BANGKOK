@@ -664,9 +664,9 @@ def focus_worker(worker_id, model, confidence, imgsz, fps, site, redetect_every=
 # once. Work is queued: the page asks, gets "pending", and asks again.
 
 CLIP_DIR = os.environ.get("CCTV_DIR", "D:/CCTV")
-# Three seconds: 200 frames a clip, which shares the GPU with the sweeps and
+# Four seconds: 150 passes a clip, which shares the GPU with the sweeps and
 # still finishes four dashboard clips inside the ten minutes they stay current.
-CLIP_STEP = 3.0
+CLIP_STEP = 4.0
 CLIP_SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
 CLIP_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}/\d{2}-\d{2}-\d{2}\.mp4$")
 clip_queue = queue.Queue()
@@ -1035,14 +1035,14 @@ def main():
     # and holding that back at 8 was leaving frames on the table for no reason
     # the measurements support. The streams themselves rarely offer more than
     # this, so in practice it only stops a single viewer monopolising the card.
-    # YOLO runs once every three seconds on the focused camera; between those
+    # YOLO runs once every four seconds on the focused camera; between those
     # passes the tracker reads five frames a second and carries each box along
     # with the picture by optical flow, so the boxes follow the traffic
-    # instead of sitting where a vehicle was three seconds ago.
+    # instead of sitting where a vehicle was four seconds ago.
     ap.add_argument("--focus-fps", type=float, default=5.0,
                     help="frames a second to pull for the camera being watched")
-    ap.add_argument("--redetect-every", type=int, default=15,
-                    help="run YOLO on every Nth focused frame (15 at 5 fps = every 3s)")
+    ap.add_argument("--redetect-every", type=int, default=20,
+                    help="run YOLO on every Nth focused frame (20 at 5 fps = every 4s)")
     ap.add_argument("--track-max-age", type=int, default=2,
                     help="YOLO passes a track survives without a matching detection")
     args = ap.parse_args()

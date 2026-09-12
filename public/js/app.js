@@ -693,7 +693,7 @@ function drawClipFrame(camId, video, overlay = el('do-' + cssId(camId)), withBox
   }
   const f = frames[idx];
   // A partial result that has not reached the playhead yet
-  if (video._boxStatus !== 'done' && t - f.t > 8) { overlay.innerHTML = waiting; return; }
+  if (video._boxStatus !== 'done' && t - f.t > 10) { overlay.innerHTML = waiting; return; }
   const r = pictureRect(video);
   const parts = Object.entries(f.counts || {})
     .filter(([_, n]) => n > 0)
