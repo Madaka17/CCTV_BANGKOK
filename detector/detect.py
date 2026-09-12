@@ -476,7 +476,8 @@ def draw_tracks(frame, tracks, area_metrics=None):
         cv2.rectangle(frame, (x1, y1 - 16), (x1 + 8 * len(label), y1), colour, -1)
         cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
-    status_str = f" · {area_metrics['status_th']}" if area_metrics else ""
+    # cv2 cannot draw Thai, so the burned-in banner uses the English status
+    status_str = f" - {area_metrics['status']}" if area_metrics else ""
     banner = f"{len(tracks)} vehicles{status_str}"
     cv2.rectangle(frame, (8, 8), (8 + 10 * len(banner), 34), (0, 0, 0), -1)
     cv2.putText(frame, banner, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)

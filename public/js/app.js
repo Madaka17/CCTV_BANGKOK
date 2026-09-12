@@ -1856,7 +1856,10 @@ function renderDashboard() {
         if (c && featuredCams.length < 4) featuredCams.push(c);
       }
     }
-    const priorityIds = ['ITICM_BMAMI0076', 'ITICM_BMAMI0164', 'DOH-PER-3-008', 'ITICM_BMAMI0071', 'ITICM_BMAMI0074', 'ITICM_BMAMI0080'];
+    // Cameras the model actually sees vehicles on. ITICM_BMAMI0076 (Sathorn)
+    // looks down from a tower and YOLO finds one or two of the dozens there;
+    // ITICM_BMAMI0164 has never produced a clip.
+    const priorityIds = ['ITICM_BMAMI0071', 'ITICM_BMAMI0074', 'DOH-PER-3-008', 'ITICM_BMAMI0080', 'ITICM_BMAMI0209', 'ITICM_BMAMI0076'];
     for (const id of priorityIds) {
       if (featuredCams.length >= 4) break;
       const c = state.cameras.find(cam => cam.id === id);
