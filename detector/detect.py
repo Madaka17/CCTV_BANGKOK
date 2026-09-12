@@ -681,42 +681,67 @@ def clip_paths(cam_id, clip):
 
 
 def analyse_clip(model, confidence, imgsz, mp4, out):
+    """Boxes for a recorded clip, one YOLO pass every CLIP_STEP seconds.
+
+    Same shape as the classic skip-rate loop: walk the clip frame by frame,
+    run the model only when frame_idx % skip_rate == 0, and hold the last
+    result until the next pass. Walking rather than seeking, because a seek
+    lands on the previous keyframe and decodes forward anyway, and on some of
+    these clips it handed back the same picture twice. The held result is
+    what the page draws between passes (see drawClipFrame), so only the
+    passes themselves are stored, each stamped with its time in the clip.
+    """
     cap = cv2.VideoCapture(mp4)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    step = max(1, int(round(fps * CLIP_STEP)))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    skip_rate = max(1, int(round(fps * CLIP_STEP)))
     frames = []
+    last_results = []
+    frame_idx = 0
     started = time.time()
-    for i in range(0, max(total, 1), step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ok, frame = cap.read()
+
+    while True:
+        if frame_idx % skip_rate == 0:
+            ok, frame = cap.read()
+        else:
+            # Skipped frames still have to be decoded to reach the next one,
+            # but grab() spares the colour conversion and the copy.
+            ok, frame = cap.grab(), None
         if not ok:
             break
-        height, width = frame.shape[:2]
-        result = predict(model, frame, confidence, imgsz, background=True)
-        counts, boxes = {}, []
-        for cls, box in vehicle_boxes(result, confidence):
-            name = VEHICLES[cls][0]
-            counts[name] = counts.get(name, 0) + 1
-            x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
-            boxes.append({
-                "k": name,
-                "x": round(x1 / width, 3), "y": round(y1 / height, 3),
-                "w": round((x2 - x1) / width, 3), "h": round((y2 - y1) / height, 3),
-            })
-        frames.append({"t": round(i / fps, 2), "total": len(boxes), "counts": counts, "boxes": boxes})
-        # A clip takes a minute or two to get through. Publish what is done so
-        # far every few frames, so the page has boxes for the start of the clip
-        # while the rest is still being worked on.
-        if len(frames) % 10 == 0:
-            write_json(out + ".partial", {
-                "status": "partial", "step": CLIP_STEP, "duration": round(total / fps, 1),
-                "frames": frames,
-            })
+
+        if frame is not None:
+            height, width = frame.shape[:2]
+            result = predict(model, frame, confidence, imgsz, background=True)
+            last_results = []
+            counts = {}
+            for cls, box in vehicle_boxes(result, confidence):
+                name = VEHICLES[cls][0]
+                counts[name] = counts.get(name, 0) + 1
+                x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
+                x1, y1 = max(0.0, x1), max(0.0, y1)
+                x2, y2 = min(float(width), x2), min(float(height), y2)
+                last_results.append({
+                    "k": name,
+                    "x": round(x1 / width, 3), "y": round(y1 / height, 3),
+                    "w": round((x2 - x1) / width, 3), "h": round((y2 - y1) / height, 3),
+                })
+            frames.append({"t": round(frame_idx / fps, 2), "total": len(last_results),
+                           "counts": counts, "boxes": last_results})
+            # A clip takes a minute or two to get through. Publish what is done
+            # so far every few passes, so the page has boxes for the start of
+            # the clip while the rest is still being worked on.
+            if len(frames) % 10 == 0:
+                write_json(out + ".partial", {
+                    "status": "partial", "step": CLIP_STEP,
+                    "duration": round(total_frames / fps, 1), "frames": frames,
+                })
+        frame_idx += 1
+
     cap.release()
     data = {
         "status": "done", "model": state["model"], "step": CLIP_STEP,
-        "duration": round(total / fps, 1), "frames": frames,
+        "duration": round(frame_idx / fps, 1), "frames": frames,
         "ms": int((time.time() - started) * 1000),
     }
     write_json(out, data)
