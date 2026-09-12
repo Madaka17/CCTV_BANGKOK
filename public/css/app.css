@@ -783,9 +783,9 @@ body.hide-toolbar #toolbar {
   animation: pin-radar-glow 2s infinite ease-in-out;
 }
 
-/* Dark Navigation Map Canvas Style */
+/* Map stays white in both themes; the raster paint in buildMap() does the washing */
 .dark #map .maplibregl-canvas {
-  filter: invert(93%) hue-rotate(180deg) brightness(88%) contrast(112%);
+  filter: none;
 }
 
 /* =========================================================================

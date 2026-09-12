@@ -1472,7 +1472,14 @@ function buildMap() {
         }
       },
       layers: [
-        { id: 'base', type: 'raster', source: 'base', paint: { 'raster-brightness-max': 0.75 } },
+        // Wash the street tiles toward white so the Longdo traffic lines and
+        // camera pins carry the colour; dark mode inverts the canvas in CSS
+        { id: 'base', type: 'raster', source: 'base', paint: {
+          'raster-saturation': -0.85,
+          'raster-brightness-min': 0.3,
+          'raster-brightness-max': 1,
+          'raster-contrast': -0.2
+        } },
         // Two directions per road, drawn as a pair of offset lines
         {
           id: 'traffic-forward',
