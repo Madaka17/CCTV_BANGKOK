@@ -234,6 +234,10 @@ function listRecordings(forceFresh = false) {
   }
 
   const out = [];
+  // A camera whose only file is still *.writing.mp4 has no clip to list yet,
+  // but the recorder is plainly running; without this the page reports it as
+  // stopped for the first ten minutes after every restart.
+  let anyWriting = false;
   for (const entry of cameras) {
     if (!entry.isDirectory() || !SAFE_SEGMENT.test(entry.name)) continue;
     const dir = path.join(RECORDINGS_DIR, entry.name);
@@ -248,7 +252,17 @@ function listRecordings(forceFresh = false) {
         .sort();
       if (clips.length) byDay.set(item.name, clips);
     }
-    if (!byDay.size) continue;
+    if (!byDay.size) {
+      try {
+        for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (d.isDirectory() && fs.readdirSync(path.join(dir, d.name)).some(f => f.includes('.writing.'))) {
+            anyWriting = true;
+            break;
+          }
+        }
+      } catch (e) {}
+      continue;
+    }
 
     const dayNames = [...byDay.keys()].sort();
     const newest = dayNames[dayNames.length - 1];
@@ -318,7 +332,7 @@ function listRecordings(forceFresh = false) {
         .sort((a, b) => a.day < b.day ? 1 : -1)
     });
   }
-  const isRecordingActive = out.some(c => c.isWriting || c.isFresh);
+  const isRecordingActive = anyWriting || out.some(c => c.isWriting || c.isFresh);
   const data = { dir: RECORDINGS_DIR, recording: isRecordingActive, cameras: out };
   recordingsCache = { at: Date.now(), data };
   return data;
